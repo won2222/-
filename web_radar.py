@@ -29,7 +29,7 @@ def format_date_clean(val):
 
 # --- [3] 웹 화면 구성 ---
 st.set_page_config(page_title="3사 통합 레이더 최종본", layout="wide")
-st.title("🚀 전국 3사 통합 공고 레이더 (완결판)")
+st.title("🚀 나라장터,국방부,LH 공고검색")
 
 if st.sidebar.button("📡 전 구역 정밀 수색", type="primary"):
     final_list = []
@@ -116,3 +116,4 @@ if st.sidebar.button("📡 전 구역 정밀 수색", type="primary"):
 
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
