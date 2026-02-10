@@ -81,28 +81,51 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
         except: pass
 
         # 3. 국방부 (수정 완료!)
-        status_msg.info("📡 [3단계] 국방부(D2B) 정밀 수색 중...")
+       # --- [국방부 수색 로직 개선 부분] ---
+        status_msg.info("📡 [3단계] 국방부(D2B) 끈질기게 수색 중...")
         for op in ['getDmstcCmpetBidPblancList', 'getDmstcOthbcVltrnNtatPlanList']:
             try:
                 url_d = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{op}"
-                res_d = requests.get(url_d, params={'serviceKey': SERVICE_KEY, 'numOfRows': '400', '_type': 'json'}, headers=HEADERS).json()
+                res_d = requests.get(url_d, params={'serviceKey': SERVICE_KEY, 'numOfRows': '400', '_type': 'json'}, headers=HEADERS, timeout=10).json()
                 items = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
                 items = [items] if isinstance(items, dict) else items
+                
                 for it in items:
                     bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
-                    clos_dt = get_safe_date(it.get('biddocPresentnClosDt') or it.get('prqudoPresentnClosDt'))
                     if any(kw in bid_nm for kw in KEYWORDS):
+                        # 기본 정보 먼저 확보 (상세 정보 실패 대비)
+                        b_no = it.get('pblancNo') or it.get('dcsNo')
+                        clos_dt = get_safe_date(it.get('biddocPresentnClosDt') or it.get('prqudoPresentnClosDt'))
+                        
+                        # 일단 기본값으로 세팅
+                        budget = int(pd.to_numeric(it.get('asignBdgtAmt', 0), errors='coerce') or 0)
+                        area = "상세확인필요"
+                        
+                        # 🎯 상세 정보(예산, 지역) 가져오기 시도
                         try:
-                            # 🎯 url_det 명칭 통일 및 호출 수정
                             url_det = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{op.replace('List', 'Detail')}"
-                            p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': it.get('pblancNo'), '_type': 'json'}
-                            det_res = requests.get(url_det, params=p_det, headers=HEADERS, timeout=5).json()
+                            p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': b_no, '_type': 'json'}
+                            det_res = requests.get(url_det, params=p_det, headers=HEADERS, timeout=3).json()
                             det = det_res.get('response', {}).get('body', {}).get('item', {})
                             
-                            budget = int(pd.to_numeric(det.get('budgetAmount') or it.get('asignBdgtAmt') or 0, errors='coerce') or 0)
-                            final_list.append({'출처':'국방부', '번호':it.get('pblancNo') or it.get('dcsNo'), '공고명':bid_nm, '수요기관':it.get('ornt'), '예산':budget, '지역':det.get('areaLmttList') or "제한없음", '마감일':format_date_clean(clos_dt), 'URL':'https://www.d2b.go.kr'})
-                        except: pass
-            except: pass
+                            if det:
+                                budget = int(pd.to_numeric(det.get('budgetAmount') or budget, errors='coerce') or 0)
+                                area = det.get('areaLmttList') or area
+                        except:
+                            pass # 상세 정보 실패해도 리스트에는 추가함
+                        
+                        final_list.append({
+                            '출처': '국방부',
+                            '번호': b_no,
+                            '공고명': bid_nm,
+                            '수요기관': it.get('ornt') or "국방부",
+                            '예산': budget,
+                            '지역': area,
+                            '마감일': format_date_clean(clos_dt),
+                            'URL': 'https://www.d2b.go.kr'
+                        })
+            except:
+                continue
 
         if final_list:
             df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by='마감일')
@@ -118,3 +141,4 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
 
     except Exception as e:
         st.error(f"🚨 오류 발생: {e}")
+
