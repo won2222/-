@@ -6,7 +6,6 @@ from urllib.parse import unquote
 from datetime import datetime, timedelta
 import io
 import re
-import traceback
 
 # --- [1] 부장님 커스텀 세팅 ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
@@ -40,7 +39,6 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
     now = datetime.now()
     s_date_api = (now - timedelta(days=5)).strftime("%Y%m%d")
     today_api = now.strftime("%Y%m%d")
-    d2b_start, d2b_end = today_api, (now + timedelta(days=3)).strftime("%Y%m%d")
     
     status_msg = st.empty()
     prog_bar = st.progress(0)
@@ -82,8 +80,8 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
                     final_list.append({'출처':'LH', '번호':b_no, '공고명':bid_nm, '수요기관':'한국토지주택공사', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt'), errors='coerce') or 0), '지역':'전국/상세참조', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
         except: pass
 
-        # 3. 국방부 (부장님 v140.0 정밀 로직)
-        status_msg.info("📡 [3단계] 국방부(D2B) 수색 중...")
+        # 3. 국방부 (수정 완료!)
+        status_msg.info("📡 [3단계] 국방부(D2B) 정밀 수색 중...")
         for op in ['getDmstcCmpetBidPblancList', 'getDmstcOthbcVltrnNtatPlanList']:
             try:
                 url_d = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{op}"
@@ -95,9 +93,12 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
                     clos_dt = get_safe_date(it.get('biddocPresentnClosDt') or it.get('prqudoPresentnClosDt'))
                     if any(kw in bid_nm for kw in KEYWORDS):
                         try:
-                            det_url = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{op.replace('List', 'Detail')}"
+                            # 🎯 url_det 명칭 통일 및 호출 수정
+                            url_det = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{op.replace('List', 'Detail')}"
                             p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': it.get('pblancNo'), '_type': 'json'}
-                            det = requests.get(url_det, params=p_det, headers=HEADERS, timeout=5).json().get('response', {}).get('body', {}).get('item', {})
+                            det_res = requests.get(url_det, params=p_det, headers=HEADERS, timeout=5).json()
+                            det = det_res.get('response', {}).get('body', {}).get('item', {})
+                            
                             budget = int(pd.to_numeric(det.get('budgetAmount') or it.get('asignBdgtAmt') or 0, errors='coerce') or 0)
                             final_list.append({'출처':'국방부', '번호':it.get('pblancNo') or it.get('dcsNo'), '공고명':bid_nm, '수요기관':it.get('ornt'), '예산':budget, '지역':det.get('areaLmttList') or "제한없음", '마감일':format_date_clean(clos_dt), 'URL':'https://www.d2b.go.kr'})
                         except: pass
@@ -105,10 +106,9 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
 
         if final_list:
             df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by='마감일')
-            status_msg.success(f"✅ 작전 완료! 총 {len(df)}건 확보.")
+            status_msg.success(f"✅ 작전 완료! 총 {len(df)}건을 확보했습니다.")
             st.dataframe(df, use_container_width=True)
             
-            # 엑셀 다운로드
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='통합공고')
@@ -117,4 +117,4 @@ if st.sidebar.button("📡 수색 시작", type="primary"):
             status_msg.warning("⚠️ 검색 결과가 없습니다.")
 
     except Exception as e:
-        st.error(f"🚨 오류: {e}")
+        st.error(f"🚨 오류 발생: {e}")
