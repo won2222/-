@@ -23,7 +23,7 @@ def format_date_clean(val):
 
 # --- [3] 웹 화면 구성 ---
 st.set_page_config(page_title="3사 통합 레이더 v286", layout="wide")
-st.title("🚀 공고검색 (최근 4일 & 국방부 예산 완벽복구)")
+st.title("🚀 공고검색 (최근 4일)")
 
 if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
     final_list = []
@@ -122,9 +122,10 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                 workbook, worksheet = writer.book, writer.sheets['통합공고']
                 worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
                 for i, _ in enumerate(df.columns): worksheet.set_column(i, i, 20)
-            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"3사_통합_리포트_{today_str}.xlsx")
+            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"공고검색_리포트_{today_str}.xlsx")
         else:
             status.warning("⚠️ 최근 4일 내 등록된 조건에 맞는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
 
