@@ -22,7 +22,7 @@ def format_date_clean(val):
     return val
 
 # --- [2] 웹 화면 구성 ---
-st.set_page_config(page_title="3사 통합 레이더 v287", layout="wide")
+st.set_page_config(page_title="공고검색 v287", layout="wide")
 st.title("🚀 공고검색 (최근 4일 수집 & 국방부 3일 마감)")
 
 if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
@@ -135,4 +135,5 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
             status.warning("⚠️ 최근 조건에 맞는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
 
