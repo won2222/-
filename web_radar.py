@@ -8,7 +8,7 @@ import io
 import re
 import time
 
-# --- [1] 부장님 커스텀 세팅 ---
+# --- [1] 커스텀 세팅 (부장님 15종 키워드 및 타겟 지역) ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "초본류", "초목류", "임목", "폐가구", "대형", "적환장"]
@@ -22,33 +22,33 @@ def format_date_clean(val):
     elif len(s) >= 8: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return val
 
-# --- [3] 웹 화면 구성 ---
-st.set_page_config(page_title="3사 통합 레이더 v289", layout="wide")
-st.title("🚀 공고검색 (국방부: 내일부터 3일 마감 기준)")
+# --- [2] 웹 화면 구성 ---
+st.set_page_config(page_title="3사 통합 레이더 v290", layout="wide")
+st.title("🚀 공고검색 (국방부 v161.0 정밀 로직 적용판)")
 
 if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
     final_list = []
     now = datetime.now()
     
-    # 나라장터/LH 검색 기준 (최근 4일간 등록된 공고)
+    # 나라장터/LH 검색 기준 (최근 4일)
     s_date = (now - timedelta(days=4)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
     
-    # 🎯 국방부 전용 날짜 세팅: 오늘 제외, 내일부터 3일간 (11, 12, 13일)
+    # 국방부 마감일 필터 (내일부터 3일간)
     tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
     target_end_day = (now + timedelta(days=3)).strftime("%Y%m%d")
     
-    status = st.empty()
+    status_st = st.empty()
     prog = st.progress(0)
     
     try:
-        # --- 1. 나라장터 (전자입찰 & 면허 필터) ---
-        status.info(f"📡 [1단계] 나라장터 수색 중 (등록일: {s_date} ~ {today_str})")
+        # --- 1. 나라장터 (G2B) ---
+        status_st.info(f"📡 [1단계] 나라장터 수색 중 (등록일: {s_date} ~ {today_str})")
         url_g2b = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/'
         for i, kw in enumerate(KEYWORDS):
             prog.progress((i + 1) / 60)
             try:
-                time.sleep(0.05) # 서버 부하 방지
+                time.sleep(0.05)
                 p = {'serviceKey': SERVICE_KEY, 'numOfRows': '100', 'type': 'json', 'inqryDiv': '1', 'inqryBgnDt': s_date+'0000', 'inqryEndDt': today_str+'2359', 'bidNtceNm': kw}
                 res = requests.get(url_g2b + 'getBidPblancListInfoServcPPSSrch', params=p, timeout=5).json()
                 items = res.get('response', {}).get('body', {}).get('items', [])
@@ -68,8 +68,8 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                     except: continue
             except: continue
 
-        # --- 2. LH (시설공사 필터 & 등록일 동기화) ---
-        status.info(f"📡 [2단계] LH 시설공사 수색 중 (등록일: {s_date} ~ {today_str})")
+        # --- 2. LH (시설공사 필터) ---
+        status_st.info(f"📡 [2단계] LH 시설공사 수색 중")
         try:
             url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
             p_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'pageNo': '1', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': '1'}
@@ -85,35 +85,70 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                     final_list.append({'출처':'3.LH', '번호':b_no, '공고명':bid_nm, '수요기관':'한국토지주택공사', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국/상세참조', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
         except: pass
 
-        # --- 3. 국방부 (내일부터 3일 마감 & 수의계약 예산 복구) ---
-        status.info(f"📡 [3단계] 방위사업청 정밀 수색 중 (마감일: {tomorrow_str} ~ {target_end_day})")
-        d2b_configs = [
-            {'type': 'bid', 'op': 'getDmstcCmpetBidPblancList', 'det': 'getDmstcCmpetBidPblancDetail', 'clos': 'biddocPresentnClosDt'},
-            {'type': 'priv', 'op': 'getDmstcOthbcVltrnNtatPlanList', 'det': 'getDmstcOthbcVltrnNtatPlanDetail', 'clos': 'prqudoPresentnClosDt'}
+        # --- 3. 국방부 (부장님 v161.0 정밀 로직 이식) ---
+        status_st.info(f"📡 [3단계] 방위사업청 v161.0 정밀 서치 중")
+        api_configs = [
+            {'type': '일반입찰', 'list': 'getDmstcCmpetBidPblancList', 'det': 'getDmstcCmpetBidPblancDetail', 'clos': 'biddocPresentnClosDt'},
+            {'type': '공개수의', 'list': 'getDmstcOthbcVltrnNtatPlanList', 'det': 'getDmstcOthbcVltrnNtatPlanDetail', 'clos': 'prqudoPresentnClosDt'}
         ]
-        for config in d2b_configs:
+        
+        for config in api_configs:
+            url_list = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{config['list']}"
+            params_d = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
+            if config['type'] == '공개수의':
+                params_d.update({'prqudoPresentnClosDateBegin': s_date, 'prqudoPresentnClosDateEnd': target_end_day})
+            
             try:
-                url_list = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{config['op']}"
-                res_d = requests.get(url_list, params={'serviceKey': SERVICE_KEY, 'numOfRows': '400', '_type': 'json'}, headers=HEADERS).json()
+                res_d = requests.get(url_list, params=params_d, headers=HEADERS).json()
                 items_d = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
                 items_d = [items_d] if isinstance(items_d, dict) else items_d
+                
                 for it in items_d:
                     bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
-                    clos_dt = str(it.get(config['clos']))[:8]
-                    # 🎯 부장님 필터: 일반입찰은 내일부터 3일간만 / 수의계약은 전수조사
+                    clos_dt_full = it.get(config['clos'])
+                    clos_dt = str(clos_dt_full)[:8]
+                    
                     if any(kw in bid_nm for kw in KEYWORDS):
-                        if config['type'] == 'priv' or (tomorrow_str <= clos_dt <= target_end_day):
-                            p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': it.get('pblancNo'), 'pblancOdr': it.get('pblancOdr'), 'demandYear': it.get('demandYear'), 'orntCode': it.get('orntCode'), 'dcsNo': it.get('dcsNo'), '_type': 'json'}
-                            if config['type'] == 'priv': p_det.update({'iemNo': it.get('iemNo'), 'ntatPlanDate': it.get('ntatPlanDate')})
-                            
-                            budget = it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
+                        # 마감일 필터링 (내일부터 3일간)
+                        if config['type'] == '공개수의' or (tomorrow_str <= clos_dt <= target_end_day):
+                            # 🎯 v161.0 핵심: 참조번호 조합 로직
+                            p_no = str(it.get('pblancNo', ''))
+                            d_year = str(it.get('demandYear', ''))
+                            d_no = str(it.get('dcsNo', ''))
+                            p_prefix = "".join([c for c in p_no if c.isalpha()])
+                            combined_no = f"{d_year}{p_prefix}{d_no}"
+
+                            p_det = {
+                                'serviceKey': SERVICE_KEY, 'pblancNo': p_no, 
+                                'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0],
+                                'demandYear': d_year, 'orntCode': it.get('orntCode'), 
+                                'dcsNo': d_no, '_type': 'json'
+                            }
+                            if config['type'] == '공개수의':
+                                p_det.update({'ntatPlanDate': it.get('ntatPlanDate'), 'iemNo': it.get('iemNo')})
+
+                            area, budget = "국방부상세", it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
                             try:
                                 url_det = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{config['det']}"
-                                det_res = requests.get(url_det, params=p_det, headers=HEADERS, timeout=5).json()
-                                det_item = det_res.get('response', {}).get('body', {}).get('item', {})
-                                budget = det_item.get('budgetAmount') or budget
+                                det_res = requests.get(url_det, params=p_det, timeout=5).json()
+                                det_data = det_res.get('response', {}).get('body', {}).get('item', {})
+                                if det_data:
+                                    area = det_data.get('areaLmttList') or area
+                                    combined_no = det_data.get('g2bPblancNo') or combined_no
+                                    budget = det_data.get('budgetAmount') or budget
                             except: pass
-                            final_list.append({'출처':'2.국방부', '번호':it.get('pblancNo') or it.get('dcsNo'), '공고명':bid_nm, '수요기관':it.get('ornt') or "국방부", '예산':int(pd.to_numeric(budget, errors='coerce') or 0), '지역':'국방부상세', '마감일':format_date_clean(it.get(config['clos'])), 'URL':'https://www.d2b.go.kr'})
+
+                            # 🎯 v161.0 진행상태 및 지역 필터
+                            progrs = it.get('progrsSttus') or "진행중"
+                            if ("진행중" in progrs or progrs == "") and any(t in area for t in MUST_PASS_AREAS):
+                                final_list.append({
+                                    '출처': f"2.국방부({config['type']})", 
+                                    '번호': combined_no, 
+                                    '공고명': bid_nm, '수요기관': it.get('ornt'), 
+                                    '예산': int(pd.to_numeric(budget, errors='coerce') or 0), 
+                                    '지역': area, '마감일': format_date_clean(clos_dt_full), 
+                                    'URL': 'https://www.d2b.go.kr'
+                                })
             except: continue
 
         if final_list:
@@ -136,8 +171,8 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                     width = 45 if col == '공고명' else 20
                     fmt = n_fmt if col == '예산' else b_fmt
                     worksheet.set_column(i, i, width, fmt)
-            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"3사_통합_리포트_{today_str}.xlsx")
+            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"3사_통합_{today_str}.xlsx")
         else:
-            status.warning("⚠️ 최근 조건에 맞는 공고가 3사에 없습니다.")
+            status_st.warning("⚠️ 최근 조건에 맞는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
