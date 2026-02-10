@@ -10,7 +10,7 @@ import re
 # --- [1] 부장님 커스텀 세팅 ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
-KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "초본류", "초목류", "임목", "폐가구", "대형", "적환장"]
+KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "초본류", "초목류", "임목", "나무", "벌채", "뿌리", "폐가구", "대형", "적환장"]
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
 MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
 
@@ -36,8 +36,8 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
     prog = st.progress(0)
     
     try:
-        # --- 1. 나라장터 (전자입찰 필터 추가) ---
-        status.info(f"📡 [1단계] 나라장터 수색 중 (전자입찰 전용)")
+        # --- 1. 나라장터 ---
+        status.info(f"📡 [1단계] 나라장터 수색 중...")
         url_g2b = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/'
         for i, kw in enumerate(KEYWORDS):
             prog.progress((i + 1) / 60)
@@ -47,10 +47,7 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                 items = res.get('response', {}).get('body', {}).get('items', [])
                 items = [items] if isinstance(items, dict) else items
                 for it in items:
-                    # 🎯 부장님 오더: 전자입찰 여부 확인
-                    bid_method = it.get('bidMethdNm', '')
-                    if "전자입찰" not in bid_method: continue
-                    
+                    if "전자입찰" not in it.get('bidMethdNm', ''): continue
                     b_no, b_ord = it.get('bidNtceNo'), str(it.get('bidNtceOrd', '0')).zfill(2)
                     try:
                         l_res = requests.get(url_g2b + 'getBidPblancListInfoLicenseLimit', params={'serviceKey': SERVICE_KEY, 'type': 'json', 'inqryDiv': '2', 'bidNtceNo': b_no, 'bidNtceOrd': b_ord}, timeout=2).json()
@@ -59,44 +56,78 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                         r_res = requests.get(url_g2b + 'getBidPblancListInfoPrtcptPsblRgn', params={'serviceKey': SERVICE_KEY, 'type': 'json', 'inqryDiv': '2', 'bidNtceNo': b_no, 'bidNtceOrd': b_ord}, timeout=2).json()
                         reg_items = r_res.get('response', {}).get('body', {}).get('items', [])
                         reg_val = ", ".join(list(set([ri.get('prtcptPsblRgnNm','') for ri in (reg_items if isinstance(reg_items, list) else [reg_items]) if ri.get('prtcptPsblRgnNm')]))) or "전국"
-                        
                         if (any(code in lic_val for code in OUR_LICENSES) or "공고참조" in lic_val) and any(ok in reg_val for ok in MUST_PASS_AREAS):
                             final_list.append({'출처':'1.나라장터', '번호':b_no, '공고명':it['bidNtceNm'], '수요기관':it['dminsttNm'], '예산':int(pd.to_numeric(it.get('asignBdgtAmt', 0), errors='coerce') or 0), '지역':reg_val, '마감일':format_date_clean(it.get('bidClseDt')), 'URL':it.get('bidNtceDtlUrl')})
                     except: continue
             except: continue
 
-        # --- 2. LH 및 3. 국방부 (기존 정밀 로직 유지) ---
-        # (LH 로직 중략 - 시설공사 필터 유지)
-        # (국방부 로직 중략 - 수의계약 예산복구 및 3일 마감 유지)
-        # [실제 배포 코드에는 전체가 포함됩니다]
+        # --- 2. LH ---
+        status.info(f"📡 [2단계] LH 수색 중...")
+        try:
+            url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
+            p_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'pageNo': '1', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': '1'}
+            res_lh = requests.get(url_lh, params=p_lh, headers=HEADERS, timeout=15)
+            res_lh.encoding = res_lh.apparent_encoding
+            clean_xml = re.sub(r'<\?xml.*\?>', '', res_lh.text).strip()
+            root = ET.fromstring(f"<root>{clean_xml}</root>")
+            for item in root.findall('.//item'):
+                raw_nm = item.findtext('bidnmKor', '')
+                bid_nm = re.sub(r'<!\[CDATA\[|\]\]>', '', raw_nm).strip()
+                if any(kw in bid_nm for kw in KEYWORDS):
+                    b_no = item.findtext('bidNum')
+                    final_list.append({'출처':'3.LH', '번호':b_no, '공고명':bid_nm, '수요기관':'한국토지주택공사', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국/상세참조', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
+        except: pass
+
+        # --- 3. 국방부 ---
+        status.info(f"📡 [3단계] 국방부 정밀 수색 중...")
+        d2b_configs = [
+            {'type': 'bid', 'op': 'getDmstcCmpetBidPblancList', 'det': 'getDmstcCmpetBidPblancDetail', 'clos': 'biddocPresentnClosDt'},
+            {'type': 'priv', 'op': 'getDmstcOthbcVltrnNtatPlanList', 'det': 'getDmstcOthbcVltrnNtatPlanDetail', 'clos': 'prqudoPresentnClosDt'}
+        ]
+        for config in d2b_configs:
+            try:
+                url_list = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{config['op']}"
+                res_d = requests.get(url_list, params={'serviceKey': SERVICE_KEY, 'numOfRows': '400', '_type': 'json'}, headers=HEADERS).json()
+                items_d = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+                items_d = [items_d] if isinstance(items_d, dict) else items_d
+                for it in items_d:
+                    bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
+                    clos_dt = it.get(config['clos'])
+                    if any(kw in bid_nm for kw in KEYWORDS) and (config['type']=='priv' or (today_str <= str(clos_dt)[:8] <= target_end_day)):
+                        p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': it.get('pblancNo'), 'pblancOdr': it.get('pblancOdr'), 'demandYear': it.get('demandYear'), 'orntCode': it.get('orntCode'), 'dcsNo': it.get('dcsNo'), '_type': 'json'}
+                        if config['type'] == 'priv': p_det.update({'iemNo': it.get('iemNo'), 'ntatPlanDate': it.get('ntatPlanDate')})
+                        budget = it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
+                        try:
+                            url_det = f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{config['det']}"
+                            det_res = requests.get(url_det, params=p_det, headers=HEADERS, timeout=5).json()
+                            det_item = det_res.get('response', {}).get('body', {}).get('item', {})
+                            budget = det_item.get('budgetAmount') or budget
+                        except: pass
+                        final_list.append({'출처':'2.국방부', '번호':it.get('pblancNo') or it.get('dcsNo'), '공고명':bid_nm, '수요기관':it.get('ornt') or "국방부", '예산':int(pd.to_numeric(budget, errors='coerce') or 0), '지역':'국방부상세', '마감일':format_date_clean(clos_dt), 'URL':'https://www.d2b.go.kr'})
+            except: continue
 
         if final_list:
             df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by=['출처', '마감일'])
             df['출처'] = df['출처'].str.replace(r'^[0-9]\.', '', regex=True)
-            st.success(f"✅ 작전 완료! 전자입찰 위주 {len(df)}건 확보.")
+            st.success(f"✅ 작전 완료! {len(df)}건 확보.")
             st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='통합공고')
                 workbook, worksheet = writer.book, writer.sheets['통합공고']
-                
-                # 🎯 엑셀 서식 강화: 헤더 색상(파란색) 및 테두리
-                header_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': '#1F4E78', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+                header_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': '#1F4E78', 'border': 1, 'align': 'center'})
                 body_fmt = workbook.add_format({'border': 1, 'align': 'left'})
                 num_fmt = workbook.add_format({'border': 1, 'align': 'right', 'num_format': '#,##0원'})
-                
-                # 헤더 적용 및 필터
                 for col_num, value in enumerate(df.columns.values):
                     worksheet.write(0, col_num, value, header_fmt)
                 worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
-                
-                # 열 너비 및 본문 서식
                 for i, col in enumerate(df.columns):
                     width = 40 if col == '공고명' else 20
                     fmt = num_fmt if col == '예산' else body_fmt
                     worksheet.set_column(i, i, width, fmt)
-                    
             st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"3사_통합_{today_str}.xlsx")
+        else:
+            status.warning("⚠️ 최근 조건에 맞는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
