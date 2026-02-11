@@ -57,13 +57,20 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
     try:
         # --- 1. 나라장터 (생략) ---
         # --- 2. LH (긴급 복구 로직) ---
-        status_st.info("📡 [PHASE 2] LH 서버 접속 시도 중...")
-        try:
-            url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
-            params_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': '1'}
-            
-            res_lh = requests.get(url_lh, params=params_lh, headers=HEADERS, timeout=20)
-            
+       status_st.info("📡 [PHASE 2] LH 공사 및 용역 통합 수색 중...")
+        # 🎯 시설공사(1)와 용역(5) 두 채널을 모두 확인합니다.
+        for job_code in ['1', '5']:
+            try:
+                url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
+                p_lh = {
+                    'serviceKey': SERVICE_KEY, 
+                    'numOfRows': '500', 
+                    'tndrbidRegDtStart': s_date, 
+                    'tndrbidRegDtEnd': today_str, 
+                    'cstrtnJobGb': job_code  # 1:공사, 5:용역
+                }
+                res_lh = requests.get(url_lh, params=p_lh, headers=HEADERS, timeout=15)
+                # ... (이하 동일 로직)
             if res_lh.status_code == 200:
                 # 인코딩 강제 설정 (깨짐 방지)
                 res_lh.encoding = 'utf-8' if 'utf-8' in res_lh.text.lower() else res_lh.apparent_encoding
@@ -122,3 +129,4 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
             st.warning("⚠️ 현재 조건에 부합하는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
