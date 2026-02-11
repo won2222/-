@@ -9,7 +9,7 @@ import re
 import time
 import pytz
 
-# --- [1] 부장님 커스텀 세팅 (정예 키워드 및 지역) ---
+# --- [1] 커스텀 세팅 (부장님 정예 키워드 및 지역) ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
@@ -30,25 +30,17 @@ def format_date_clean(val):
     elif len(s) >= 8: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return val
 
-# --- [2] 대시보드 커스텀 디자인 (에러 방지용 보정 버전) ---
+# --- [2] 대시보드 디자인 (Python 3.13 호환성 강화 버전) ---
 st.set_page_config(page_title="THE RADAR", layout="wide")
 
-# CSS와 HTML 구조를 분리하여 에러 가능성 차단
-dashboard_style = """
-<style>
-    .main-title { font-size: 42px; font-weight: 900; color: #1E3A8A; letter-spacing: -2px; margin-bottom: 0px; }
-    .sub-title { font-size: 14px; color: #6B7280; font-weight: 500; margin-bottom: 40px; letter-spacing: 2px; }
-    .metric-card { 
-        background-color: #F3F4F6; padding: 20px; border-radius: 12px; border-left: 5px solid #1E3A8A; 
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.05); text-align: center;
-    }
-    .metric-val { font-size: 24px; font-weight: 700; color: #1E3A8A; }
-    .metric-label { font-size: 12px; color: #4B5563; }
-</style>
-"""
-st.markdown(dashboard_style, unsafe_allow_all_html=True)
+# CSS를 별도 변수 없이 직접 한 줄씩 주입하여 에러 차단
+st.markdown('<style> .main-title { font-size: 42px; font-weight: 900; color: #1E3A8A; letter-spacing: -2px; } </style>', unsafe_allow_all_html=True)
+st.markdown('<style> .sub-title { font-size: 14px; color: #6B7280; font-weight: 500; margin-bottom: 30px; letter-spacing: 2px; } </style>', unsafe_allow_all_html=True)
+st.markdown('<style> .metric-card { background-color: #F3F4F6; padding: 20px; border-radius: 12px; border-left: 5px solid #1E3A8A; text-align: center; } </style>', unsafe_allow_all_html=True)
+st.markdown('<style> .metric-val { font-size: 24px; font-weight: 700; color: #1E3A8A; } .metric-label { font-size: 12px; color: #4B5563; } </style>', unsafe_allow_all_html=True)
+
 st.markdown('<div class="main-title">📡 THE RADAR</div>', unsafe_allow_all_html=True)
-st.markdown('<div class="sub-title">FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE SYSTEM</div>', unsafe_allow_all_html=True)
+st.markdown('<div class="sub-title">FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE</div>', unsafe_allow_all_html=True)
 
 if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
     final_list = []
@@ -160,19 +152,15 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
         if final_list:
             df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by=['마감일'])
             
-            # 상단 현황 카드
-            c1, c2, c3, c4, c5 = st.columns(5)
+            # 메트릭 카드 한 줄씩 직접 생성
             counts = df['출처'].value_counts()
+            c1, c2, c3, c4, c5 = st.columns(5)
             
-            # 메트릭 카드 HTML 생성
-            def make_card(label, val):
-                return f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-val">{val}</div></div>'
-            
-            c1.markdown(make_card("나라장터", counts.get("G2B",0)), unsafe_allow_all_html=True)
-            c2.markdown(make_card("LH", counts.get("LH",0)), unsafe_allow_all_html=True)
-            c3.markdown(make_card("국방부", counts.get("D2B(일반)",0)+counts.get("D2B(수의)",0)), unsafe_allow_all_html=True)
-            c4.markdown(make_card("수자원", counts.get("K-water",0)), unsafe_allow_all_html=True)
-            c5.markdown(make_card("가스공사", counts.get("KOGAS",0)), unsafe_allow_all_html=True)
+            c1.markdown(f'<div class="metric-card"><div class="metric-label">나라장터</div><div class="metric-val">{counts.get("G2B",0)}</div></div>', unsafe_allow_all_html=True)
+            c2.markdown(f'<div class="metric-card"><div class="metric-label">LH</div><div class="metric-val">{counts.get("LH",0)}</div></div>', unsafe_allow_all_html=True)
+            c3.markdown(f'<div class="metric-card"><div class="metric-label">국방부</div><div class="metric-val">{counts.get("D2B(일반)",0)+counts.get("D2B(수의)",0)}</div></div>', unsafe_allow_all_html=True)
+            c4.markdown(f'<div class="metric-card"><div class="metric-label">수자원</div><div class="metric-val">{counts.get("K-water",0)}</div></div>', unsafe_allow_all_html=True)
+            c5.markdown(f'<div class="metric-card"><div class="metric-label">가스공사</div><div class="metric-val">{counts.get("KOGAS",0)}</div></div>', unsafe_allow_all_html=True)
             
             st.write("")
             st.success(f"✅ 총 {len(df)}건의 전략 공고가 포착되었습니다.")
