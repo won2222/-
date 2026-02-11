@@ -20,7 +20,6 @@ KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
 MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
 
-# URL 및 기관 설정
 KWATER_DETAIL_BASE = "https://ebid.kwater.or.kr/wq/index.do?w2xPath=/ui/index.xml&view=/bidpblanc/bidpblancsttus/BIDBD32000002.xml&tndrPbanno="
 KOGAS_HOME = "https://k-ebid.kogas.or.kr"
 
@@ -31,13 +30,12 @@ def format_date_clean(val):
     elif len(s) >= 8: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return val
 
-# --- [2] 대시보드 커스텀 디자인 적용 ---
+# --- [2] 대시보드 커스텀 디자인 (에러 방지용 보정 버전) ---
 st.set_page_config(page_title="THE RADAR", layout="wide")
 
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;700;900&display=swap');
-    html, body, [class*="css"] { font-family: 'Pretendard', sans-serif; }
+# CSS와 HTML 구조를 분리하여 에러 가능성 차단
+dashboard_style = """
+<style>
     .main-title { font-size: 42px; font-weight: 900; color: #1E3A8A; letter-spacing: -2px; margin-bottom: 0px; }
     .sub-title { font-size: 14px; color: #6B7280; font-weight: 500; margin-bottom: 40px; letter-spacing: 2px; }
     .metric-card { 
@@ -46,21 +44,21 @@ st.markdown("""
     }
     .metric-val { font-size: 24px; font-weight: 700; color: #1E3A8A; }
     .metric-label { font-size: 12px; color: #4B5563; }
-    </style>
-    <div class="main-title">📡 THE RADAR</div>
-    <div class="sub-title">FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE SYSTEM</div>
-    """, unsafe_allow_all_html=True)
+</style>
+"""
+st.markdown(dashboard_style, unsafe_allow_all_html=True)
+st.markdown('<div class="main-title">📡 THE RADAR</div>', unsafe_allow_all_html=True)
+st.markdown('<div class="sub-title">FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE SYSTEM</div>', unsafe_allow_all_html=True)
 
 if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
     final_list = []
     KST = pytz.timezone('Asia/Seoul')
     now = datetime.now(KST)
     
-    # 날짜 세팅
     s_date = (now - timedelta(days=4)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
     search_month = now.strftime('%Y%m') 
-    kogas_start = (now - timedelta(days=14)).strftime("%Y%m%d") # 부장님 오더: 2주
+    kogas_start = (now - timedelta(days=14)).strftime("%Y%m%d")
     tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
     target_end_day = (now + timedelta(days=3)).strftime("%Y%m%d")
     
@@ -107,7 +105,7 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                     final_list.append({'출처':'LH', '번호':b_no, '공고명':bid_nm, '수요기관':'LH', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
         except: pass
 
-        # --- 3. 국방부 (v161.0) ---
+        # --- 3. 국방부 ---
         status_st.info("📡 [PHASE 3] D2B 수색 중...")
         for cfg in [{'t': '일반', 'l': 'getDmstcCmpetBidPblancList', 'd': 'getDmstcCmpetBidPblancDetail', 'c': 'biddocPresentnClosDt'}, {'t': '수의', 'l': 'getDmstcOthbcVltrnNtatPlanList', 'd': 'getDmstcOthbcVltrnNtatPlanDetail', 'c': 'prqudoPresentnClosDt'}]:
             try:
@@ -165,17 +163,22 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
             # 상단 현황 카드
             c1, c2, c3, c4, c5 = st.columns(5)
             counts = df['출처'].value_counts()
-            with c1: st.markdown(f'<div class="metric-card"><div class="metric-label">나라장터</div><div class="metric-val">{counts.get("G2B",0)}</div></div>', unsafe_allow_all_html=True)
-            with c2: st.markdown(f'<div class="metric-card"><div class="metric-label">LH</div><div class="metric-val">{counts.get("LH",0)}</div></div>', unsafe_allow_all_html=True)
-            with c3: st.markdown(f'<div class="metric-card"><div class="metric-label">국방부</div><div class="metric-val">{counts.get("D2B(일반)",0)+counts.get("D2B(수의)",0)}</div></div>', unsafe_allow_all_html=True)
-            with c4: st.markdown(f'<div class="metric-card"><div class="metric-label">수자원</div><div class="metric-val">{counts.get("K-water",0)}</div></div>', unsafe_allow_all_html=True)
-            with c5: st.markdown(f'<div class="metric-card"><div class="metric-label">가스공사</div><div class="metric-val">{counts.get("KOGAS",0)}</div></div>', unsafe_allow_all_html=True)
+            
+            # 메트릭 카드 HTML 생성
+            def make_card(label, val):
+                return f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-val">{val}</div></div>'
+            
+            c1.markdown(make_card("나라장터", counts.get("G2B",0)), unsafe_allow_all_html=True)
+            c2.markdown(make_card("LH", counts.get("LH",0)), unsafe_allow_all_html=True)
+            c3.markdown(make_card("국방부", counts.get("D2B(일반)",0)+counts.get("D2B(수의)",0)), unsafe_allow_all_html=True)
+            c4.markdown(make_card("수자원", counts.get("K-water",0)), unsafe_allow_all_html=True)
+            c5.markdown(make_card("가스공사", counts.get("KOGAS",0)), unsafe_allow_all_html=True)
             
             st.write("")
             st.success(f"✅ 총 {len(df)}건의 전략 공고가 포착되었습니다.")
             st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
             
-            # 엑셀 다운로드 (부장님 파란색 서식)
+            # 엑셀 다운로드
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='RADAR_REPORT')
