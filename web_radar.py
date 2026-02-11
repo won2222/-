@@ -7,15 +7,22 @@ from datetime import datetime, timedelta
 import io
 import re
 import time
-# 🎯 서버와 상관없이 한국 시간을 잡기 위한 설정
 import pytz 
 
-# --- [1] 커스텀 세팅 (부장님 15종 키워드) ---
+# --- [1] 커스텀 세팅 (부장님 15종 키워드 및 지역) ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
+
+# 1~3사 공통 키워드
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "초본류", "초목류", "임목", "폐가구", "대형", "적환장"]
+# 🎯 수자원공사 전용 키워드 (v181.0)
+KWATER_KEYWORDS = ["부유물", "식물성", "초본류", "폐목재"]
+
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
 MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
+
+# 🎯 수자원공사 상세페이지 베이스 URL (부장님 제공)
+KWATER_DETAIL_BASE = "https://ebid.kwater.or.kr/wq/index.do?w2xPath=/ui/index.xml&view=/bidpblanc/bidpblancsttus/BIDBD32000002.xml&tndrPbanno="
 
 def format_date_clean(val):
     if not val or val == "-": return "-"
@@ -25,21 +32,22 @@ def format_date_clean(val):
     return val
 
 # --- [2] 웹 화면 구성 ---
-st.set_page_config(page_title="3사 통합 레이더 v291", layout="wide")
-st.title("🚀 공고검색 (한국 시간 동기화 및 v161.0 적용)")
+st.set_page_config(page_title="4사 통합 레이더 v293", layout="wide")
+st.title("🚀 공고검색 (4사 통합 & 수자원 다이렉트 URL)")
 
 if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
     final_list = []
     
-    # 🎯 서버 시간 무시, 한국 시간 강제 고정
+    # 🎯 한국 시간 고정 (서버 오차 방지)
     KST = pytz.timezone('Asia/Seoul')
     now = datetime.now(KST)
     
-    # 나라장터/LH 검색 기준 (최근 4일)
+    # 나라장터/LH/수자원 등록일 기준 (최근 4일)
     s_date = (now - timedelta(days=4)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
+    search_month = now.strftime('%Y%m') 
     
-    # 국방부 마감일 필터 (내일부터 3일간)
+    # 국방부 마감일 기준 (내일부터 3일간)
     tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
     target_end_day = (now + timedelta(days=3)).strftime("%Y%m%d")
     
@@ -48,10 +56,10 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
     
     try:
         # --- 1. 나라장터 (G2B) ---
-        status_st.info(f"📡 [1단계] 나라장터 수집 ({s_date} ~ {today_str})")
+        status_st.info(f"📡 [1단계] 나라장터 수색 중 ({s_date} ~ {today_str})")
         url_g2b = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/'
         for i, kw in enumerate(KEYWORDS):
-            prog.progress((i + 1) / 60)
+            prog.progress((i + 1) / 80)
             try:
                 time.sleep(0.05)
                 p = {'serviceKey': SERVICE_KEY, 'numOfRows': '100', 'type': 'json', 'inqryDiv': '1', 'inqryBgnDt': s_date+'0000', 'inqryEndDt': today_str+'2359', 'bidNtceNm': kw}
@@ -74,7 +82,7 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
             except: continue
 
         # --- 2. LH ---
-        status_st.info(f"📡 [2단계] LH 시설공사 수집 ({s_date} ~ {today_str})")
+        status_st.info(f"📡 [2단계] LH 시설공사 수색 중")
         try:
             url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
             p_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'pageNo': '1', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': '1'}
@@ -91,7 +99,7 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
         except: pass
 
         # --- 3. 국방부 (v161.0 정밀 로직) ---
-        status_st.info(f"📡 [3단계] 방위사업청 v161.0 수색 ({tomorrow_str} ~ {target_end_day})")
+        status_st.info(f"📡 [3단계] 방위사업청 v161.0 정밀 수색")
         api_configs = [
             {'type': '일반입찰', 'list': 'getDmstcCmpetBidPblancList', 'det': 'getDmstcCmpetBidPblancDetail', 'clos': 'biddocPresentnClosDt'},
             {'type': '공개수의', 'list': 'getDmstcOthbcVltrnNtatPlanList', 'det': 'getDmstcOthbcVltrnNtatPlanDetail', 'clos': 'prqudoPresentnClosDt'}
@@ -129,11 +137,37 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                                 final_list.append({'출처': f"2.국방부({config['type']})", '번호': combined_no, '공고명': bid_nm, '수요기관': it.get('ornt'), '예산': int(pd.to_numeric(budget, errors='coerce') or 0), '지역': area, '마감일': format_date_clean(clos_dt_full), 'URL': 'https://www.d2b.go.kr'})
             except: continue
 
+        # --- 4. 수자원공사 (v181.0 + 다이렉트 URL) ---
+        status_st.info(f"📡 [4단계] 수자원공사 정밀 수색 중")
+        url_kwater = "http://apis.data.go.kr/B500001/ebid/tndr3/servcList"
+        for kw in KWATER_KEYWORDS:
+            try:
+                p_kw = {'serviceKey': SERVICE_KEY, 'pageNo': '1', 'numOfRows': '100', '_type': 'json', 'searchDt': search_month, 'bidNm': kw}
+                res_kw = requests.get(url_kwater, params=p_kw, headers=HEADERS, timeout=10).json()
+                k_items = res_kw.get('response', {}).get('body', {}).get('items', {}).get('item', [])
+                k_items = [k_items] if isinstance(k_items, dict) else k_items
+                for kit in k_items:
+                    title = kit.get('tndrPblancNm', '-')
+                    raw_no = kit.get('tndrPbanno', '-')
+                    if any(k in title for k in KWATER_KEYWORDS):
+                        final_list.append({
+                            '출처': '4.수자원공사',
+                            '번호': raw_no,
+                            '공고명': title,
+                            '수요기관': f"수자원공사({kit.get('cntrctDeptNm', '-')})",
+                            '예산': 0, 
+                            '지역': '공고참조',
+                            '마감일': format_date_clean(kit.get('tndrPblancEnddt')),
+                            'URL': f"{KWATER_DETAIL_BASE}{raw_no}"
+                        })
+            except: continue
+
         if final_list:
             df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by=['출처', '마감일'])
             df['출처'] = df['출처'].str.replace(r'^[0-9]\.', '', regex=True)
-            st.success(f"✅ 작전 완료! {len(df)}건을 확보했습니다.")
+            st.success(f"✅ 작전 완료! 4사 통합 {len(df)}건을 확보했습니다.")
             st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
+            
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='통합공고')
@@ -147,6 +181,6 @@ if st.sidebar.button("📡 전 구역 정밀 수색 시작", type="primary"):
                     width = 45 if col == '공고명' else 20
                     fmt = n_fmt if col == '예산' else b_fmt
                     worksheet.set_column(i, i, width, fmt)
-            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"3사_통합_{today_str}.xlsx")
+            st.download_button(label="📥 통합 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"4사_통합_리포트_{today_str}.xlsx")
         else: status_st.warning("⚠️ 최근 조건에 맞는 공고가 없습니다.")
     except Exception as e: st.error(f"🚨 시스템 오류: {e}")
