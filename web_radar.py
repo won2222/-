@@ -5,11 +5,11 @@ from datetime import datetime, timedelta
 import io
 import pytz
 
-# --- [1] 국방부 전용 설정 (v161.0 기반) ---
+# --- [1] 국방부 전용 설정 (부장님 v161.0 로직 100% 이식) ---
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
-# 부장님 타겟 키워드 및 지역
+# 🎯 부장님 타겟 키워드 및 지역 필터
 TARGET_KEYWORDS = ["폐기물", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성", "음식물"]
 TARGET_AREAS = ["경기도", "평택시", "화성시", "제한없음", "전국"]
 
@@ -23,25 +23,26 @@ def format_d2b_date(date_val):
     except: return date_str
 
 # --- [2] 웹 화면 구성 ---
-st.set_page_config(page_title="D2B 전용 레이더", layout="wide")
-st.title("🚀 국방부(D2B) 전 채널 통합 정밀 서치")
-st.write("📍 **필터:** 경기도, 평택, 화성 / **상태:** 진행중 / **구분:** 수의 + 일반")
+st.set_page_config(page_title="D2B 전용 테스트", layout="wide")
+st.title("📡 D2B 정밀 타격 테스트 유닛")
+st.write("📍 **필터:** v161.0 로직 적용 (상세 페이지 2차 파싱 모드)")
 st.divider()
 
-# 사이드바 설정
+# 사이드바: 수색 범위 조절
 st.sidebar.header("🕹️ 수색 범위 설정")
-days_range = st.sidebar.slider("조회 범위 (일)", 1, 30, 10)
+search_days = st.sidebar.slider("조회 과거/미래 범위 (일)", 1, 30, 10)
 
 if st.sidebar.button("🔍 국방부 단독 정밀 수색 시작", type="primary"):
     total_results = []
     KST = pytz.timezone('Asia/Seoul')
     now = datetime.now(KST)
     
-    start_day = (now - timedelta(days=days_range)).strftime("%Y%m%d")
-    end_day = (now + timedelta(days=days_range)).strftime("%Y%m%d")
+    # v161.0 날짜 동기화
+    start_day = (now - timedelta(days=search_days)).strftime("%Y%m%d")
+    end_day = (now + timedelta(days=search_days)).strftime("%Y%m%d")
     
     st.write(f"⏱️ **수색 시점:** `{now.strftime('%Y-%m-%d %H:%M:%S')}`")
-    st.write(f"📅 **대상 기간:** `{start_day}` ~ `{end_day}`")
+    st.info(f"📅 **조회 기간:** {start_day} ~ {end_day}")
 
     api_configs = [
         {
@@ -62,7 +63,7 @@ if st.sidebar.button("🔍 국방부 단독 정밀 수색 시작", type="primary
     status_msg = st.empty()
 
     for idx, config in enumerate(api_configs):
-        status_msg.info(f"🔍 [{config['type']}] 데이터 스캔 중...")
+        status_msg.info(f"🔍 [{config['type']}] 데이터 스캔 및 상세 분석 중...")
         prog_bar.progress((idx + 1) / 2)
         
         params = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
@@ -78,11 +79,11 @@ if st.sidebar.button("🔍 국방부 단독 정밀 수색 시작", type="primary
                 for it in items:
                     bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
                     if any(kw in bid_nm for kw in TARGET_KEYWORDS):
+                        # 🎯 v161.0 핵심: 상세 조회를 위한 파라미터 구성 (정밀 오타 수정)
                         p_no = it.get('pblancNo')
                         d_year = str(it.get('demandYear', ''))
                         d_no = str(it.get('dcsNo', ''))
                         
-                        # 🎯 상세 조회를 위한 파라미터 구성 (v161.0 수정본)
                         p_det = {
                             'serviceKey': SERVICE_KEY, 
                             'pblancNo': p_no, 
@@ -99,8 +100,8 @@ if st.sidebar.button("🔍 국방부 단독 정밀 수색 시작", type="primary
                         budget = 0
                         combined_g2b = p_no
                         
+                        # 🎯 상세 페이지 2차 정밀 수집 (Timeout 방어 로직 포함)
                         try:
-                            # 🎯 v161.0 핵심: 상세 페이지 2차 접속
                             det_res = requests.get(config['det_url'], params=p_det, headers=HEADERS, timeout=5).json()
                             det_data = det_res.get('response', {}).get('body', {}).get('item', {})
                             if isinstance(det_data, dict):
@@ -121,19 +122,19 @@ if st.sidebar.button("🔍 국방부 단독 정밀 수색 시작", type="primary
                                 '마감일시': format_d2b_date(it.get(config['clos']))
                             })
         except Exception as e:
-            st.error(f"🚨 {config['type']} 수색 중 오류 발생: {e}")
+            st.error(f"🚨 {config['type']} 서버 접속 중 오류: {e}")
 
     # --- [3] 결과 출력 ---
     status_msg.empty()
     if total_results:
         df = pd.DataFrame(total_results).drop_duplicates(subset=['통합참조번호']).sort_values(by='마감일시')
-        st.success(f"✅ 국방부 수색 완료! 총 {len(df)}건 확보")
+        st.success(f"✅ 국방부 수색 완료! 총 {len(df)}건을 확보했습니다.")
         st.dataframe(df.style.format({'예산(원)': '{:,}원'}), use_container_width=True)
         
         # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='D2B_TEST')
-        st.download_button(label="📥 국방부 테스트 리포트 다운로드", data=output.getvalue(), file_name=f"D2B_TEST_{now.strftime('%m%d')}.xlsx")
+            df.to_excel(writer, index=False, sheet_name='D2B_REFINED')
+        st.download_button(label="📥 국방부 단독 리포트 다운로드", data=output.getvalue(), file_name=f"D2B_ONLY_{now.strftime('%m%d')}.xlsx")
     else:
-        st.warning("⚠️ 검색 조건에 맞는 국방부 데이터가 없습니다. (서버 상태 확인 필요)")
+        st.warning("⚠️ 현재 조건에 맞는 국방부 공고가 없습니다. 서버 점검 여부를 확인하세요.")
