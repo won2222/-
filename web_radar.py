@@ -7,13 +7,12 @@ from datetime import datetime, timedelta
 import io
 import re
 import time
-import pytz 
+import pytz
 
-# --- [1] 커스텀 세팅 (부장님 15종 키워드 및 타겟 지역) ---
+# --- [1] 커스텀 세팅 (부장님 정예 키워드 및 지역) ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
-# 기관별 키워드 분리
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "초본류", "초목류", "임목", "폐가구", "대형", "적환장"]
 KWATER_KEYWORDS = ["부유물", "식물성", "초본류", "폐목재"]
 KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
@@ -21,7 +20,6 @@ KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
 MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
 
-# 베이스 URL 설정
 KWATER_DETAIL_BASE = "https://ebid.kwater.or.kr/wq/index.do?w2xPath=/ui/index.xml&view=/bidpblanc/bidpblancsttus/BIDBD32000002.xml&tndrPbanno="
 KOGAS_HOME = "https://k-ebid.kogas.or.kr"
 
@@ -32,30 +30,23 @@ def format_date_clean(val):
     elif len(s) >= 8: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return val
 
-# --- [2] THE RADAR 브랜드 디자인 적용 ---
+# --- [2] 대시보드 레이아웃 (순정 함수 사용으로 에러 원천 차단) ---
 st.set_page_config(page_title="THE RADAR", layout="wide")
 
-st.markdown("""
-    <style>
-    .main-title { font-size: 36px; font-weight: 900; color: #1F4E78; letter-spacing: -1.5px; margin-bottom: 5px; }
-    .sub-title { font-size: 14px; color: #888; font-weight: 400; margin-bottom: 30px; letter-spacing: 1px; }
-    .stButton>button { border-radius: 5px; height: 3em; width: 100%; font-weight: bold; }
-    </style>
-    <div class="main-title">📡 THE RADAR</div>
-    <div class="sub-title">FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE</div>
-    """, unsafe_allow_all_html=True)
+# 에러가 발생하는 st.markdown 대신 순정 함수 사용
+st.title("📡 THE RADAR")
+st.caption("FRENERGY STRATEGIC PROCUREMENT INTELLIGENCE SYSTEM")
+st.divider()
 
 if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
     final_list = []
-    # 한국 시간 강제 고정
     KST = pytz.timezone('Asia/Seoul')
     now = datetime.now(KST)
     
-    # 날짜 파라미터 계산
     s_date = (now - timedelta(days=4)).strftime("%Y%m%d")
     today_str = now.strftime("%Y%m%d")
     search_month = now.strftime('%Y%m') 
-    kogas_start = (now - timedelta(days=180)).strftime("%Y%m%d")
+    kogas_start = (now - timedelta(days=14)).strftime("%Y%m%d")
     tomorrow_str = (now + timedelta(days=1)).strftime("%Y%m%d")
     target_end_day = (now + timedelta(days=3)).strftime("%Y%m%d")
     
@@ -63,8 +54,8 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
     prog = st.progress(0)
     
     try:
-        # --- 1. 나라장터 (G2B) ---
-        status_st.info(f"📡 [PHASE 1] 나라장터 수색 중 ({s_date} ~ {today_str})")
+        # --- 1. 나라장터 ---
+        status_st.info("📡 [PHASE 1] G2B 수색 중...")
         url_g2b = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/'
         for i, kw in enumerate(KEYWORDS):
             prog.progress((i + 1) / 100)
@@ -85,7 +76,7 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                         reg_items = r_res.get('response', {}).get('body', {}).get('items', [])
                         reg_val = ", ".join(list(set([ri.get('prtcptPsblRgnNm','') for ri in (reg_items if isinstance(reg_items, list) else [reg_items]) if ri.get('prtcptPsblRgnNm')]))) or "전국"
                         if (any(code in lic_val for code in OUR_LICENSES) or "공고참조" in lic_val) and any(ok in reg_val for ok in MUST_PASS_AREAS):
-                            final_list.append({'출처':'나라장터', '번호':b_no, '공고명':it['bidNtceNm'], '수요기관':it['dminsttNm'], '예산':int(pd.to_numeric(it.get('asignBdgtAmt', 0), errors='coerce') or 0), '지역':reg_val, '마감일':format_date_clean(it.get('bidClseDt')), 'URL':it.get('bidNtceDtlUrl')})
+                            final_list.append({'출처':'G2B', '번호':b_no, '공고명':it['bidNtceNm'], '수요기관':it['dminsttNm'], '예산':int(pd.to_numeric(it.get('asignBdgtAmt', 0), errors='coerce') or 0), '지역':reg_val, '마감일':format_date_clean(it.get('bidClseDt')), 'URL':it.get('bidNtceDtlUrl')})
                     except: continue
             except: continue
 
@@ -99,19 +90,15 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                 bid_nm = re.sub(r'<!\[CDATA\[|\]\]>', '', item.findtext('bidnmKor', '')).strip()
                 if any(kw in bid_nm for kw in KEYWORDS):
                     b_no = item.findtext('bidNum')
-                    final_list.append({'출처':'LH', '번호':b_no, '공고명':bid_nm, '수요기관':'한국토지주택공사', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국/상세참조', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
+                    final_list.append({'출처':'LH', '번호':b_no, '공고명':bid_nm, '수요기관':'LH', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
         except: pass
 
-        # --- 3. 국방부 (v161.0 정밀 로직) ---
-        status_st.info("📡 [PHASE 3] 국방부 정밀 수색...")
-        d2b_api = [
-            {'t': '일반', 'l': 'getDmstcCmpetBidPblancList', 'd': 'getDmstcCmpetBidPblancDetail', 'c': 'biddocPresentnClosDt'},
-            {'t': '수의', 'l': 'getDmstcOthbcVltrnNtatPlanList', 'd': 'getDmstcOthbcVltrnNtatPlanDetail', 'c': 'prqudoPresentnClosDt'}
-        ]
-        for cfg in d2b_api:
-            p_d = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
-            if cfg['t'] == '수의': p_d.update({'prqudoPresentnClosDateBegin': s_date, 'prqudoPresentnClosDateEnd': target_end_day})
+        # --- 3. 국방부 ---
+        status_st.info("📡 [PHASE 3] D2B 수색 중...")
+        for cfg in [{'t': '일반', 'l': 'getDmstcCmpetBidPblancList', 'd': 'getDmstcCmpetBidPblancDetail', 'c': 'biddocPresentnClosDt'}, {'t': '수의', 'l': 'getDmstcOthbcVltrnNtatPlanList', 'd': 'getDmstcOthbcVltrnNtatPlanDetail', 'c': 'prqudoPresentnClosDt'}]:
             try:
+                p_d = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
+                if cfg['t'] == '수의': p_d.update({'prqudoPresentnClosDateBegin': s_date, 'prqudoPresentnClosDateEnd': target_end_day})
                 res_d = requests.get(f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{cfg['l']}", params=p_d, headers=HEADERS).json()
                 items_d = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
                 items_d = [items_d] if isinstance(items_d, dict) else items_d
@@ -119,29 +106,21 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                     bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
                     clos_dt_f = it.get(cfg['c'])
                     clos_dt = str(clos_dt_f)[:8]
-                    if any(kw in bid_nm for kw in KEYWORDS):
-                        if cfg['t'] == '수의' or (tomorrow_str <= clos_dt <= target_end_day):
-                            p_no, d_year, d_no = str(it.get('pblancNo', '')), str(it.get('demandYear', '')), str(it.get('dcsNo', ''))
-                            p_prefix = "".join([c for c in p_no if c.isalpha()])
-                            combined_no = f"{d_year}{p_prefix}{d_no}"
-                            p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': p_no, 'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0], 'demandYear': d_year, 'orntCode': it.get('orntCode'), 'dcsNo': d_no, '_type': 'json'}
-                            if cfg['t'] == '수의': p_det.update({'ntatPlanDate': it.get('ntatPlanDate'), 'iemNo': it.get('iemNo')})
-                            
-                            area, budget = "국방부상세", it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
-                            try:
-                                det_res = requests.get(f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{cfg['d']}", params=p_det, timeout=5).json().get('response', {}).get('body', {}).get('item', {})
-                                if det_res:
-                                    area = det_res.get('areaLmttList') or area
-                                    combined_no = det_res.get('g2bPblancNo') or combined_no
-                                    budget = det_res.get('budgetAmount') or budget
-                            except: pass
-                            
-                            if ("진행중" in it.get('progrsSttus', '진행중') or it.get('progrsSttus','') == "") and any(t in area for t in MUST_PASS_AREAS):
-                                final_list.append({'출처': f"국방부({cfg['t']})", '번호': combined_no, '공고명': bid_nm, '수요기관': it.get('ornt'), '예산': int(pd.to_numeric(budget, errors='coerce') or 0), '지역': area, '마감일': format_date_clean(clos_dt_f), 'URL': 'https://www.d2b.go.kr'})
+                    if any(kw in bid_nm for kw in KEYWORDS) and (cfg['t']=='수의' or (tomorrow_str <= clos_dt <= target_end_day)):
+                        p_no, d_year, d_no = str(it.get('pblancNo', '')), str(it.get('demandYear', '')), str(it.get('dcsNo', ''))
+                        p_det = {'serviceKey': SERVICE_KEY, 'pblancNo': p_no, 'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0], 'demandYear': d_year, 'orntCode': it.get('orntCode'), 'dcsNo': d_no, '_type': 'json'}
+                        if cfg['t'] == '수의': p_det.update({'ntatPlanDate': it.get('ntatPlanDate'), 'iemNo': it.get('iemNo')})
+                        budget, area = it.get('asignBdgtAmt') or it.get('budgetAmount') or 0, "상세참조"
+                        try:
+                            det = requests.get(f"http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/{cfg['d']}", params=p_det, timeout=5).json().get('response', {}).get('body', {}).get('item', {})
+                            if det: area, budget, p_no = det.get('areaLmttList') or area, det.get('budgetAmount') or budget, det.get('g2bPblancNo') or p_no
+                        except: pass
+                        if any(t in area for t in MUST_PASS_AREAS):
+                            final_list.append({'출처':f'D2B({cfg["t"]})', '번호':p_no, '공고명':bid_nm, '수요기관':it.get('ornt'), '예산':int(pd.to_numeric(budget, errors='coerce') or 0), '지역':area, '마감일':format_date_clean(clos_dt_f), 'URL':'https://www.d2b.go.kr'})
             except: continue
 
-        # --- 4. 수자원공사 (v181.0 + 다이렉트 URL) ---
-        status_st.info("📡 [PHASE 4] 수자원공사 수색 중...")
+        # --- 4. 수자원공사 ---
+        status_st.info("📡 [PHASE 4] K-water 수색 중...")
         for kw in KWATER_KEYWORDS:
             try:
                 res_k = requests.get("http://apis.data.go.kr/B500001/ebid/tndr3/servcList", params={'serviceKey': SERVICE_KEY, 'searchDt': search_month, 'bidNm': kw, '_type': 'json'}, timeout=10).json()
@@ -151,32 +130,43 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                     title = kit.get('tndrPblancNm', '-')
                     raw_no = kit.get('tndrPbanno', '-')
                     if any(k in title for k in KWATER_KEYWORDS):
-                        final_list.append({'출처': '수자원공사', '번호': raw_no, '공고명': title, '수요기관': f"수자원공사({kit.get('cntrctDeptNm', '-')})", '예산': 0, '지역': '공고참조', '마감일': format_date_clean(kit.get('tndrPblancEnddt')), 'URL': f"{KWATER_DETAIL_BASE}{raw_no}"})
+                        final_list.append({'출처': 'K-water', '번호': raw_no, '공고명': title, '수요기관': '수자원공사', '예산': 0, '지역': '전국', '마감일': format_date_clean(kit.get('tndrPblancEnddt')), 'URL': f"{KWATER_DETAIL_BASE}{raw_no}"})
             except: continue
 
-        # --- 5. 가스공사 (v193.0) ---
-        status_st.info("📡 [PHASE 5] 가스공사 수색 중...")
+        # --- 5. 가스공사 ---
+        status_st.info("📡 [PHASE 5] KOGAS 수색 중...")
         try:
             res_kg = requests.get("http://apis.data.go.kr/B551210/bidInfoList/getBidInfoList", params={'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'DOCDATE_START': kogas_start}, timeout=15)
-            if res_kg.status_code == 200:
-                root_kg = ET.fromstring(res_kg.text)
-                for item in root_kg.findall('.//item'):
-                    title = item.findtext('NOTICE_NAME') or '-'
-                    if any(kw in title for kw in KOGAS_KEYWORDS):
-                        final_list.append({'출처': '가스공사', '번호': item.findtext('NOTICE_CODE') or '-', '공고명': title, '수요기관': '한국가스공사', '예산': 0, '지역': item.findtext('WORK_TYPE_NAME') or '용역', '마감일': format_date_clean(item.findtext('END_DT')), 'URL': KOGAS_HOME})
+            root_kg = ET.fromstring(res_kg.text)
+            for item in root_kg.findall('.//item'):
+                title = item.findtext('NOTICE_NAME') or '-'
+                if any(kw in title for kw in KOGAS_KEYWORDS):
+                    final_list.append({'출처': 'KOGAS', '번호': item.findtext('NOTICE_CODE') or '-', '공고명': title, '수요기관': '가스공사', '예산': 0, '지역': '전국', '마감일': format_date_clean(item.findtext('END_DT')), 'URL': KOGAS_HOME})
         except: pass
 
-        # --- 최종 결과 처리 ---
+        # --- [대시보드 출력] ---
         if final_list:
-            df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by=['출처', '마감일'])
-            st.success(f"✅ 수색 완료! 총 {len(df)}건의 유효 공고를 확보했습니다.")
+            df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by=['마감일'])
+            
+            # 순정 메트릭 함수 사용 (에러 원천 차단)
+            counts = df['출처'].value_counts()
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("나라장터", f"{counts.get('G2B', 0)}건")
+            c2.metric("LH", f"{counts.get('LH', 0)}건")
+            c3.metric("국방부", f"{counts.get('D2B(일반)',0)+counts.get('D2B(수의)',0)}건")
+            c4.metric("수자원", f"{counts.get('K-water', 0)}건")
+            c5.metric("가스공사", f"{counts.get('KOGAS', 0)}건")
+            
+            st.write("")
+            st.success(f"✅ 총 {len(df)}건의 전략 공고가 포착되었습니다.")
             st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
             
+            # 엑셀 다운로드
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='THE_RADAR_REPORT')
-                workbook, worksheet = writer.book, writer.sheets['THE_RADAR_REPORT']
-                h_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': '#1F4E78', 'border': 1, 'align': 'center'})
+                df.to_excel(writer, index=False, sheet_name='RADAR_REPORT')
+                workbook, worksheet = writer.book, writer.sheets['RADAR_REPORT']
+                h_fmt = workbook.add_format({'bold': True, 'font_color': 'white', 'bg_color': '#1E3A8A', 'border': 1, 'align': 'center'})
                 b_fmt = workbook.add_format({'border': 1, 'align': 'left'})
                 n_fmt = workbook.add_format({'border': 1, 'align': 'right', 'num_format': '#,##0원'})
                 for c_idx, val in enumerate(df.columns.values): worksheet.write(0, c_idx, val, h_fmt)
@@ -185,8 +175,8 @@ if st.sidebar.button("🔍 전략 수색 개시", type="primary"):
                     width = 50 if col == '공고명' else 20
                     fmt = n_fmt if col == '예산' else b_fmt
                     worksheet.set_column(i, i, width, fmt)
-            st.download_button(label="📥 전략 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"THE_RADAR_{today_str}.xlsx")
+            st.download_button(label="📥 전략 리포트(Excel) 다운로드", data=output.getvalue(), file_name=f"RADAR_{today_str}.xlsx")
         else:
-            status_st.warning("⚠️ 현재 조건에 부합하는 공고가 없습니다.")
+            st.warning("⚠️ 현재 조건에 부합하는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
