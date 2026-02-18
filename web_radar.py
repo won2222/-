@@ -19,7 +19,7 @@ KWATER_KEYWORDS = ["부유물", "식물성", "초본류", "폐목재"]
 KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
 
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
-MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
+MUST_PASS_AREAS = ['경기', '평택', '화성', '서울', '인천', '전국', '제한없음']
 
 # 베이스 URL
 KWATER_DETAIL_BASE = "https://ebid.kwater.or.kr/wq/index.do?w2xPath=/ui/index.xml&view=/bidpblanc/bidpblancsttus/BIDBD32000002.xml&tndrPbanno="
@@ -191,5 +191,6 @@ if st.sidebar.button("🔍 7일 정밀 수색 개시", type="primary"):
             st.warning("⚠️ 최근 7일 이내에 조건에 부합하는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
 
 
