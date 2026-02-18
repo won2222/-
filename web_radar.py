@@ -91,20 +91,29 @@ if st.sidebar.button("🔍 7일 정밀 수색 개시", type="primary"):
             except: continue
 
         # --- 2. LH ---
-        status_st.info("📡 [2/5] LH 시설공사 수색 중...")
-        try:
-            url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
-            p_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': '1'}
-            res_lh = requests.get(url_lh, params=p_lh, headers=HEADERS, timeout=15)
-            res_lh.encoding = res_lh.apparent_encoding
-            clean_xml = re.sub(r'<\?xml.*\?>', '', res_lh.text).strip()
-            root = ET.fromstring(f"<root>{clean_xml}</root>")
-            for item in root.findall('.//item'):
-                bid_nm = re.sub(r'<!\[CDATA\[|\]\]>', '', item.findtext('bidnmKor', '')).strip()
-                if any(kw in bid_nm for kw in KEYWORDS):
-                    b_no = item.findtext('bidNum')
-                    final_list.append({'출처':'LH', '번호':b_no, '공고명':bid_nm, '수요기관':'한국토지주택공사', '예산':int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), '지역':'전국', '마감일':format_date_clean(item.findtext('openDtm')), 'URL':f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}&bidDegree=00"})
-        except: pass
+        status_st.info("📡 [2/5] LH 공사 및 용역 통합 수색 중...")
+        url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
+        # 🎯 LH는 공사(1)와 용역(5)을 각각 찔러야 정확합니다.
+        for job_gb in ['1', '5']:
+            try:
+                p_lh = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'tndrbidRegDtStart': s_date, 'tndrbidRegDtEnd': today_str, 'cstrtnJobGb': job_gb}
+                res_lh = requests.get(url_lh, params=p_lh, headers=HEADERS, timeout=15)
+                res_lh.encoding = res_lh.apparent_encoding
+                clean_xml = re.sub(r'<\?xml.*\?>', '', res_lh.text).strip()
+                root = ET.fromstring(f"<root>{clean_xml}</root>")
+                for item in root.findall('.//item'):
+                    bid_nm = re.sub(r'<!\[CDATA\[|\]\]>', '', item.findtext('bidnmKor', '')).strip()
+                    if any(kw in bid_nm for kw in KEYWORDS):
+                        b_no = item.findtext('bidNum')
+                        final_list.append({
+                            '출처': f"LH({'공사' if job_gb=='1' else '용역'})", 
+                            '번호': b_no, '공고명': bid_nm, '수요기관': '한국토지주택공사', 
+                            '예산': int(pd.to_numeric(item.findtext('fdmtlAmt') or 0, errors='coerce') or 0), 
+                            '지역': '전국', '마감일': format_date_clean(item.findtext('openDtm')), 
+                            'URL': f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={b_no}"
+                        })
+                        stats["LH"] += 1
+            except: continue
 
         # --- 3. 국방부 (v161.0 정밀 로직) ---
         status_st.info("📡 [3/5] 국방부 수의/일반 정밀 수색 중...")
@@ -182,4 +191,5 @@ if st.sidebar.button("🔍 7일 정밀 수색 개시", type="primary"):
             st.warning("⚠️ 최근 7일 이내에 조건에 부합하는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
 
