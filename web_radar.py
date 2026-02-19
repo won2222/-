@@ -37,7 +37,7 @@ CORE_KW = ["폐목재", "폐가구", "임목", "폐기물", "낙엽"]
 
 # 지역 필터 (서울, 인천 완전 배제)
 MUST_PASS_AREAS = ['경기', '평택', '화성', '전국', '제한없음']
-EXCLUDE_AREAS = ['서울', '인천']
+
 
 if st.sidebar.button("🚀 전 기관 통합 수색 개시", type="primary"):
     final_list = []
@@ -144,3 +144,4 @@ if st.sidebar.button("🚀 전 기관 통합 수색 개시", type="primary"):
         st.download_button("📥 통합 리포트 저장", data=output.getvalue(), file_name=f"RADAR_v900.xlsx")
     else:
         st.warning("⚠️ 포착된 공고가 없습니다. LH 날짜나 키워드를 확인해 보세요.")
+
