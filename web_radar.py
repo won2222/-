@@ -19,7 +19,7 @@ KWATER_KEYWORDS = ["부유물", "식물성", "초본류", "폐목재"]
 KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
 
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
-MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
+MUST_PASS_AREAS = ['경기', '평택', '화성', '전국', '제한없음']
 
 def format_date_clean(val):
     if not val or val == "-": return "-"
@@ -166,3 +166,4 @@ if st.sidebar.button("🔍 전 기관 통합 수색 개시", type="primary"):
             
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
