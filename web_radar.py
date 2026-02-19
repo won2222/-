@@ -15,7 +15,7 @@ HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽", "식물성", "부유물", "임목", "폐가구", "대형", "적환장"]
 OUR_LICENSES = ['1226', '1227', '6786', '6770']
-MUST_PASS_AREAS = ['경기도', '평택', '화성', '서울', '인천', '전국', '제한없음']
+MUST_PASS_AREAS = ['경기도', '평택', '화성', '전국', '제한없음']
 
 def format_date_clean(val):
     if not val or val == "-": return "-"
@@ -140,3 +140,4 @@ if st.sidebar.button("🔍 전 기관 정밀 수색 개시", type="primary"):
             st.warning("⚠️ 검색 조건에 맞는 공고가 없습니다.")
     except Exception as e:
         st.error(f"🚨 시스템 오류: {e}")
+
