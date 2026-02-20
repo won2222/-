@@ -15,7 +15,7 @@ HEADERS = {'User-Agent': 'Mozilla/5.0'}
 # 정예 키워드 및 필터 (v169 기반 18종 확장)
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성", 
             "부유", "잔재물", "반입불가", "초본류", "초목류", "폐가구", "대형", "적환장", "매립", "재활용"]
-LH_KEYWORDS_REGEX = '폐목재|임목|목재|나무|벌채|뿌리|폐기물|운반|재활용'
+LH_KEYWORDS_REGEX = '폐목재|임목|폐기물|낙엽|'
 
 def clean_date_strict(val):
     if not val or val == "-": return "-"
@@ -126,3 +126,4 @@ if st.sidebar.button("🔍 3사 통합 정밀 수색 개시", type="primary"):
         st.download_button(label="📥 3사 통합 리포트 다운로드", data=output.getvalue(), file_name=f"RADAR_HYBRID_{today_api}.xlsx")
     else:
         st.warning("⚠️ 현재 조건에 맞는 공고가 없습니다.")
+
