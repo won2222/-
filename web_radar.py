@@ -2,99 +2,92 @@ import streamlit as st
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-import io
 import re
+import io
+from datetime import datetime, timedelta
 
-# --- [1] 부장님 정예 설정 (v169 기반) ---
+# --- [1] 부장님 v90.0 LH 전용 클리너 ---
+def lh_korean_cleaner(text):
+    if not text: return ""
+    text = re.sub(r'<!\[CDATA\[|\]\]>', '', text)
+    return text.strip()
+
+# --- [2] 설정값 (부장님 원본 100% 준수) ---
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
-KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성", "잔재물", "매립", "재활용"]
 
-def clean_date_strict(val):
-    if not val or val == "-": return "-"
-    s = re.sub(r'[^0-9]', '', str(val).split('.')[0])
-    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) >= 8 else val
+# LH 전용 (부장님 v90 키워드)
+LH_KEYWORDS = '폐목재|임목|목재|나무|벌채|뿌리|폐기물|운반|재활용'
+# 국방부 전용 (부장님 v161/169 키워드)
+D2B_KEYWORDS = ["폐기물", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성"]
 
-# --- [2] 대시보드 레이아웃 ---
-st.set_page_config(page_title="THE RADAR v5500", layout="wide")
-st.title("📡 THE RADAR v5500.0")
-st.error("🚀 LH 전용 CDATA 파쇄기 가동: 숨겨진 LH 데이터를 강제로 추출합니다.")
+st.set_page_config(page_title="THE RADAR v5700", layout="wide")
+st.title("📡 THE RADAR v5700.0")
+st.info("🚀 LH 수색 모드: [시설공사(Gb:1)] 단독 타격 모드 가동")
 
-if st.sidebar.button("🔍 LH & 국방부 정밀 수색", type="primary"):
+if st.sidebar.button("🚀 LH(시설공사) & 국방부 수색", type="primary"):
     final_list = []
     now = datetime.now()
     
-    # 🎯 LH 전용 8자리 날짜 언어 (부장님 v169 방식)
-    lh_start = (now - timedelta(days=15)).strftime("%Y%m%d")
-    lh_end = now.strftime("%Y%m%d")
-    
+    # 🎯 날짜 규격 (부장님 v90 방식)
+    lh_start, lh_end = '20260201', '20260228' # 2월 집중 타격
+    d2b_today = now.strftime("%Y%m%d")
+    d2b_future = (now + timedelta(days=10)).strftime("%Y%m%d")
+
     status_st = st.empty()
 
-    # --- 1. LH (e-Bid) : CDATA 파쇄 수색 ---
-    status_st.info("📡 [LH포털] CDATA 장벽 파쇄 중...")
+    # --- 1. LH (e-Bid) : 오직 시설공사(Gb:1) 전용 언어 ---
+    status_st.info("📡 [LH포털] 시설공사 카테고리 침투 중...")
     try:
         url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
         params_lh = {
-            'serviceKey': SERVICE_KEY, 
-            'numOfRows': '500', 
-            'tndrbidRegDtStart': lh_start, 
-            'tndrbidRegDtEnd': lh_end, 
-            'cstrtnJobGb': '1'
+            'serviceKey': SERVICE_KEY, 'pageNo': '1', 'numOfRows': '500',
+            'tndrbidRegDtStart': lh_start, 'tndrbidRegDtEnd': lh_end,
+            'cstrtnJobGb': '1' # 🎯 부장님 지시: 시설공사 고정
         }
+        res_lh = requests.get(url_lh, params=params_lh, timeout=20)
+        res_lh.encoding = res_lh.apparent_encoding
+        clean_xml = re.sub(r'<\?xml.*\?>', '', res_lh.text).strip()
         
-        # LH 서버는 응답이 XML이므로 문자열로 먼저 받습니다.
-        res_lh = requests.get(url_lh, params=params_lh, timeout=15)
-        res_lh.encoding = 'utf-8' # 한글 깨짐 방지
-        
-        # 🎯 [핵심] 부장님 v169.0 필살기: CDATA 강제 제거
-        raw_xml = res_lh.text
-        clean_xml = re.sub(r'<!\[CDATA\[|\]\]>', '', raw_xml) # CDATA 껍데기 파쇄
-        
-        # 파쇄된 텍스트를 다시 XML 구조로 해석
-        root = ET.fromstring(clean_xml)
-        items = root.findall('.//item')
-        
-        for item in items:
-            # 껍데기가 벗겨진 깨끗한 공고명 추출
-            bid_nm = item.findtext('bidnmKor', '').strip()
-            
-            if any(kw in bid_nm for kw in KEYWORDS):
-                final_list.append({
-                    '출처': 'LH',
-                    '번호': item.findtext('bidNum'),
-                    '공고명': bid_nm,
-                    '수요기관': '한국토지주택공사',
-                    '예산': int(pd.to_numeric(item.findtext('fdmtlAmt') or 0)),
-                    '지역': '전국(상세확인)',
-                    '마감일': clean_date_strict(item.findtext('openDtm')),
-                    'URL': f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={item.findtext('bidNum')}"
-                })
-                st.write(f"✅ LH 포착: {bid_nm[:30]}...")
-    except Exception as e:
-        st.warning(f"⚠️ LH 서버 통신 지연 (직접 접속 권장): {e}")
+        if "<resultCode>00</resultCode>" in clean_xml:
+            root = ET.fromstring(f"<root>{clean_xml}</root>")
+            for item in root.findall('.//item'):
+                clean_nm = lh_korean_cleaner(item.findtext('bidnmKor', ''))
+                
+                # 🎯 v90 정규표현식 필터링
+                if re.search(LH_KEYWORDS, clean_nm, re.IGNORECASE):
+                    final_list.append({
+                        '출처': 'LH(시설)',
+                        '번호': item.findtext('bidNum'),
+                        '공고명': clean_nm,
+                        '기관': 'LH공사',
+                        '예산': int(pd.to_numeric(item.findtext('fdmtlAmt') or 0)),
+                        '마감': item.findtext('openDtm'),
+                        'URL': f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={item.findtext('bidNum')}"
+                    })
+    except: pass
 
-    # --- 2. 국방부 (D2B) : 성공 로직 유지 ---
-    status_st.info("📡 [국방부] 데이터 수집 중...")
-    # (국방부 수집 로직은 잘 되니까 그대로 수행)
+    # --- 2. 국방부 (D2B) : v161/169 정예 엔진 ---
+    status_st.info("📡 [국방부] 통합 채널 수색 중...")
     try:
         url_d = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList"
-        res_d = requests.get(url_d, params={'serviceKey': SERVICE_KEY, 'numOfRows': '200', '_type': 'json'}, timeout=15).json()
+        res_d = requests.get(url_d, params={'serviceKey': SERVICE_KEY, 'numOfRows': '300', '_type': 'json'}, timeout=15).json()
         items_d = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
         for it in ([items_d] if isinstance(items_d, dict) else items_d):
             bid_nm = it.get('bidNm', '')
-            if any(kw in bid_nm for kw in KEYWORDS):
+            if any(kw in bid_nm for kw in D2B_KEYWORDS):
                 final_list.append({
-                    '출처': 'D2B(일반)', '번호': it.get('pblancNo'), '공고명': bid_nm, '수요기관': it.get('ornt'),
-                    '예산': int(pd.to_numeric(it.get('asignBdgtAmt') or 0)), '지역': '상세참조',
-                    '마감일': clean_date_strict(it.get('biddocPresentnClosDt')), 'URL': 'https://www.d2b.go.kr'
+                    '출처': 'D2B', '번호': it.get('pblancNo') or it.get('dcsNo'),
+                    '공고명': bid_nm, '기관': it.get('ornt'),
+                    '예산': int(pd.to_numeric(it.get('asignBdgtAmt') or it.get('budgetAmount') or 0)),
+                    '마감': it.get('biddocPresentnClosDt'), 'URL': 'https://www.d2b.go.kr'
                 })
     except: pass
 
     status_st.empty()
     if final_list:
-        df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by='마감일')
-        st.success(f"✅ 수색 완료! LH 포함 총 {len(df)}건을 확보했습니다.")
-        st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
+        df = pd.DataFrame(final_list).drop_duplicates(subset=['번호']).sort_values(by='마감')
+        st.success(f"✅ 작전 완료! LH 시설공사 물량을 포함하여 총 {len(df)}건을 확보했습니다.")
+        st.dataframe(df, use_container_width=True)
     else:
-        st.warning("🚨 모든 장벽을 깼으나 현재 진행 중인 LH/국방부 공고가 없습니다.")
+        st.warning("⚠️ 현재 조건에 맞는 LH 시설공사 및 국방부 공고가 없습니다.")
