@@ -15,7 +15,7 @@ HEADERS = {'User-Agent': 'Mozilla/5.0'}
 # 정예 키워드 및 필터 (v169 기반 18종 확장)
 KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성", 
             "부유", "잔재물", "반입불가", "초본류", "초목류", "폐가구", "대형", "적환장", "매립", "재활용"]
-LH_KEYWORDS_REGEX = ["폐기물", "임목", "폐목재", "폐가구"] 
+LH_KEYWORDS_REGEX = '폐목재|임목|목재|나무|벌채|뿌리|폐기물|운반|재활용'
 
 def clean_date_strict(val):
     if not val or val == "-": return "-"
