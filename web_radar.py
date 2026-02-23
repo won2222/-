@@ -1,22 +1,20 @@
 import streamlit as st
 import requests
 import pandas as pd
-import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 from datetime import datetime, timedelta
 import io
 import re
 import pytz
 
-# --- [1] 부장님 정예 커스텀 설정 ---
+# --- [1] 부장님 커스텀 세팅 (v28.5 기준 유지) ---
 SERVICE_KEY = unquote('9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0')
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 
-# 18종 확장 키워드
-G2B_D2B_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성", "부유", "잔재물", "반입불가", "초본류", "초목류", "폐가구", "대형", "적환장", "매립", "재활용"]
-LH_KEYWORDS_ONLY = '폐목재|임목|낙엽'
-KWATER_KEYWORDS = ["부유물", "식물성", "초본류", "폐목재"]
-KOGAS_KEYWORDS = ["폐목재", "가연성", "임목"]
+KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "식물성", "낙엽", "임목", "가연성"]
+MUST_PASS = ['경기도', '평택시', '화성시', '서울특별시', '서울', '인천', '전국']
+EXCLUDE_LIST = ['충청', '전라', '강원', '경상', '제주', '부산', '대구', '광주', '대전', '울산', '세종', '충북', '충남', '경북', '경남', '전북', '전남']
+TARGET_LICENSES = ['6786', '6770', '1226', '1227'] # 이미지 및 지시사항 기반
 
 def clean_date_strict(val):
     if not val or val == "-": return "-"
@@ -24,142 +22,100 @@ def clean_date_strict(val):
     if len(s) >= 8: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return val
 
-def lh_korean_cleaner(text):
-    if not text: return ""
-    return re.sub(r'<!\[CDATA\[|\]\]>', '', text).strip()
-
 # --- [2] 대시보드 레이아웃 ---
-st.set_page_config(page_title="THE RADAR v8600", layout="wide")
-st.title("📡 THE RADAR v8600.0")
+st.set_page_config(page_title="THE RADAR v28.7", layout="wide")
+st.title("📡 THE RADAR v28.7 (부장님 로직 온전 적용)")
 
-# --- [3] 사이드바 설정 ---
-st.sidebar.header("📅 LH 전용 수색 설정")
-lh_start_date = st.sidebar.date_input("LH 시작일", datetime(2026, 2, 13))
-lh_end_date = st.sidebar.date_input("LH 종료일", datetime(2026, 2, 20))
-st.sidebar.divider()
-
-if st.sidebar.button("🚀 5대 기관 통합 정밀 수색", type="primary"):
+if st.button("🚀 부장님 방식 정밀 수색 시작", type="primary"):
     final_list = []
     KST = pytz.timezone('Asia/Seoul')
     now = datetime.now(KST)
     
-    lh_s = lh_start_date.strftime("%Y%m%d")
-    lh_e = lh_end_date.strftime("%Y%m%d")
-    s7 = (now - timedelta(days=7)).strftime("%Y%m%d")
-    today_api = now.strftime("%Y%m%d")
-    search_month = now.strftime('%Y%m')
-    kogas_start = (now - timedelta(days=180)).strftime("%Y%m%d")
-
+    # v28.5 방식 날짜 설정 (4일치)
+    s_date = (now - timedelta(days=4)).strftime("%Y%m%d0000")
+    e_date = now.strftime("%Y%m%d2359")
+    
     status_st = st.empty()
+    url_base = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/'
 
-    # --- 1. 나라장터 (G2B) : 이미지 항목(지역명, 업종코드) 정밀 추출 ---
-    status_st.info("📡 [1/5] 나라장터(G2B) 이미지 항목 정밀 추출 중...")
-    try:
-        url_g2b_search = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
-        url_g2b_detail = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcDetail'
-        
-        g_raw = []
-        for kw in G2B_D2B_KEYWORDS:
-            p = {'serviceKey': SERVICE_KEY, 'numOfRows': '100', 'type': 'json', 'inqryDiv': '1', 'inqryBgnDt': s7+'0000', 'inqryEndDt': today_api+'2359', 'bidNtceNm': kw}
-            res = requests.get(url_g2b_search, params=p, timeout=10).json()
-            items = res.get('response', {}).get('body', {}).get('items', [])
-            for it in ([items] if isinstance(items, dict) else items):
-                g_raw.append(it)
-        
-        if g_raw:
-            df_g = pd.DataFrame(g_raw).drop_duplicates(subset=['bidNtceNo'])
-            for _, row in df_g.iterrows():
-                b_no = row['bidNtceNo']
-                b_ord = str(row.get('bidNtceOrd', '00')).zfill(2)
-                
-                # 🎯 이미지에서 요청하신 항목 타겟팅 (prtcptLmtRgnNm, indstrytyCd)
-                region_val = "전국" 
-                license_val = "상세참조"
-                
-                try:
-                    # 상세 API 호출하여 이미지 속 데이터 추출
-                    det_res = requests.get(url_g2b_detail, params={'serviceKey': SERVICE_KEY, 'type': 'json', 'bidNtceNo': b_no, 'bidNtceOrd': b_ord}, timeout=5).json()
-                    det_item = det_res.get('response', {}).get('body', {}).get('item', {})
-                    
-                    if det_item:
-                        # 1. 참가제한지역명 (이미지의 prtcptLmtRgnNm)
-                        region_val = det_item.get('prtcptLmtRgnNm') or "전국"
-                        # 2. 업종코드 (이미지의 indstrytyCd) - 코드명과 코드를 같이 표시
-                        license_val = det_item.get('indstrytyNm') or det_item.get('indstrytyCd') or "상세참조"
-                except: pass
-
-                final_list.append({
-                    '출처': 'G2B', '번호': b_no, '공고명': row['bidNtceNm'], '지역': region_val, '면허': license_val,
-                    '기관': row['dminsttNm'], '예산': int(pd.to_numeric(row.get('asignBdgtAmt', 0))), 
-                    '마감': clean_date_strict(row.get('bidClseDt')), 'URL': row.get('bidNtceDtlUrl')
-                })
-    except: pass
-
-    # --- 2. LH / 3. 국방부 / 4. 수자원 / 5. 가스공사 (기본 구조 유지) ---
-    # (LH 생략 - 이전 로직과 동일)
-    try:
-        url_lh = "http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev"
-        res_lh = requests.get(url_lh, params={'serviceKey': SERVICE_KEY, 'pageNo': '1', 'numOfRows': '500', 'tndrbidRegDtStart': lh_s, 'tndrbidRegDtEnd': lh_e, 'cstrtnJobGb': '1'}, timeout=15)
-        res_lh.encoding = res_lh.apparent_encoding
-        root = ET.fromstring(re.sub(r'<\?xml.*\?>', '', res_lh.text).strip())
-        for item in root.findall('.//item'):
-            bid_nm = lh_korean_cleaner(item.findtext('bidnmKor', ''))
-            if re.search(LH_KEYWORDS_ONLY, bid_nm, re.IGNORECASE):
-                final_list.append({
-                    '출처': 'LH', '번호': item.findtext('bidNum'), '공고명': bid_nm, '지역': '전국/공고참조', '면허': '상세참조',
-                    '기관': '한국토지주택공사', '예산': int(pd.to_numeric(item.findtext('fdmtlAmt') or 0)), '마감': clean_date_strict(item.findtext('openDtm')),
-                    'URL': f"https://ebid.lh.or.kr/ebid.et.tp.cmd.BidsrvcsDetailListCmd.dev?bidNum={item.findtext('bidNum')}"
-                })
-    except: pass
-
-    # (국방부 생략 - 이전 로직과 동일)
-    try:
-        url_d = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList"
-        res_d = requests.get(url_d, params={'serviceKey': SERVICE_KEY, 'numOfRows': '400', '_type': 'json'}, headers=HEADERS).json()
-        items_d = res_d.get('response', {}).get('body', {}).get('items', {}).get('item', [])
-        for it in ([items_d] if isinstance(items_d, dict) else items_d):
-            bid_nm = it.get('bidNm', '')
-            if any(kw in bid_nm for kw in G2B_D2B_KEYWORDS):
-                final_list.append({
-                    '출처': 'D2B', '번호': it.get('g2bPblancNo') or it.get('pblancNo'), '공고명': bid_nm, '지역': '상세확인', '면허': '상세확인',
-                    '기관': it.get('ornt'), '예산': int(pd.to_numeric(it.get('asignBdgtAmt') or 0)), '마감': clean_date_strict(it.get('biddocPresentnClosDt')), 'URL': 'https://www.d2b.go.kr'
-                })
-    except: pass
-
-    # (수자원/가스공사 생략 - 이전 로직과 동일)
-    for kw in KWATER_KEYWORDS:
+    # --- Step 1: v28.5 방식 키워드별 수집 ---
+    all_raw = []
+    for kw in KEYWORDS:
+        status_st.info(f"🔎 키워드 수집 중: {kw}")
+        params = {'serviceKey': SERVICE_KEY, 'numOfRows': '100', 'type': 'json', 'inqryDiv': '1', 'inqryBgnDt': s_date, 'inqryEndDt': e_date, 'bidNtceNm': kw}
         try:
-            url_k = "http://apis.data.go.kr/B500001/ebid/tndr3/servcList"
-            p_k = {'serviceKey': SERVICE_KEY, 'searchDt': search_month, 'bidNm': kw, '_type': 'json'}
-            res_k = requests.get(url_k, params=p_k, timeout=10).json()
-            items_k = res_k.get('response', {}).get('body', {}).get('items', {}).get('item', [])
-            for kit in ([items_k] if isinstance(items_k, dict) else items_k):
-                final_list.append({'출처': 'K-water', '번호': kit.get('tndrPbanno'), '공고명': kit.get('tndrPblancNm'), '지역': '공고참조', '면허': '상세참조', '기관': kit.get('cntrctDeptNm', '수자원공사'), '예산': 0, '마감': clean_date_strict(kit.get('tndrPblancEnddt')), 'URL': 'https://ebid.kwater.or.kr'})
-        except: continue
+            res = requests.get(url_base + 'getBidPblancListInfoServcPPSSrch', params=params, timeout=10).json()
+            items = res.get('response', {}).get('body', {}).get('items', [])
+            if items:
+                for it in ([items] if isinstance(items, dict) else items):
+                    it['searchKeyword'] = kw
+                    all_raw.append(it)
+        except: pass
 
-    try:
-        url_kg = "http://apis.data.go.kr/B551210/bidInfoList/getBidInfoList"
-        res_kg = requests.get(url_kg, params={'serviceKey': SERVICE_KEY, 'numOfRows': '500', 'DOCDATE_START': kogas_start}, timeout=15)
-        root_kg = ET.fromstring(res_kg.text)
-        for it in root_kg.findall('.//item'):
-            title = it.findtext('NOTICE_NAME') or ''
-            if any(kw in title for kw in KOGAS_KEYWORDS):
-                final_list.append({'출처': 'KOGAS', '번호': it.findtext('NOTICE_CODE'), '공고명': title, '지역': '공고참조', '면허': '상세참조', '기관': '한국가스공사', '예산': 0, '마감': clean_date_strict(it.findtext('END_DT')), 'URL': 'https://k-ebid.kogas.or.kr'})
-    except: pass
+    if all_raw:
+        df_bids = pd.DataFrame(all_raw).drop_duplicates(subset=['bidNtceNo'])
+        
+        # --- Step 2: v28.5 방식 상세 분석 및 필터링 ---
+        for i, row in df_bids.iterrows():
+            b_no = row['bidNtceNo']
+            b_ord = str(row.get('bidNtceOrd', '00')).zfill(2)
+            status_st.warning(f"⚙️ 상세 필터링 분석 중 ({i+1}/{len(df_bids)}): {b_no}")
 
-    # --- [최종 출력] ---
-    status_st.empty()
-    if final_list:
-        df = pd.DataFrame(final_list).drop_duplicates(subset=['번호'])
-        df = df.sort_values(by=['마감'])
-        df = df[['출처', '번호', '공고명', '지역', '면허', '기관', '예산', '마감', 'URL']]
-        
-        st.success(f"✅ 작전 완료! 이미지 요청 항목(지역명, 업종코드) 정밀 반영 완료")
-        st.dataframe(df.style.format({'예산': '{:,}원'}), use_container_width=True)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False)
-        st.download_button(label="📥 통합 리포트 다운로드", data=output.getvalue(), file_name=f"RADAR_V8600_{today_api}.xlsx")
-    else:
-        st.warning("⚠️ 검색된 공고가 없습니다.")
+            # 🎯 이미지 요청 항목 상세 조회 (v169/v8600 로직)
+            reg_val, lic_val = "정보없음", "정보없음"
+            is_pass_reg, is_pass_lic = False, False
+            
+            try:
+                # 상세 API 호출 (이미지의 prtcptLmtRgnNm, indstrytyCd 추출용)
+                det_res = requests.get(url_base + 'getBidPblancListInfoServcDetail', 
+                                     params={'serviceKey': SERVICE_KEY, 'type': 'json', 'bidNtceNo': b_no, 'bidNtceOrd': b_ord}, timeout=5).json()
+                det_item = det_res.get('response', {}).get('body', {}).get('item', {})
+
+                if det_item:
+                    # 1. 지역 필터링 (prtcptLmtRgnNm)
+                    reg_val = det_item.get('prtcptLmtRgnNm', '전국')
+                    if any(ok in reg_val for ok in MUST_PASS) or reg_val == "전국":
+                        is_pass_reg = True
+                    # 제외 지역에 포함되고 통과 지역에 없으면 탈락
+                    if any(no in reg_val for no in EXCLUDE_LIST) and not any(ok in reg_val for ok in MUST_PASS):
+                        is_pass_reg = False
+                    
+                    # 2. 면허 필터링 (indstrytyCd)
+                    lic_code = det_item.get('indstrytyCd', '')
+                    lic_val = det_item.get('indstrytyNm', '정보없음')
+                    if any(c in lic_code for c in TARGET_LICENSES):
+                        is_pass_lic = True
+                    elif not TARGET_LICENSES: # 면허 필터 없으면 통과
+                        is_pass_lic = True
+                else:
+                    # 상세 정보 없을 경우 v28.5 기본값 적용
+                    is_pass_reg, is_pass_lic = True, True
+            except:
+                is_pass_reg, is_pass_lic = True, True
+
+            # --- Step 3: 최종 통과된 건만 리스트에 추가 ---
+            if is_pass_reg and is_pass_lic:
+                final_list.append({
+                    '키워드': row['searchKeyword'],
+                    '공고번호': b_no,
+                    '공고명': row['bidNtceNm'],
+                    '참가제한지역': reg_val,
+                    '업종(면허)': lic_val,
+                    '수요기관': row['dminsttNm'],
+                    '배정예산': int(pd.to_numeric(row.get('asignBdgtAmt', 0), errors='coerce') or 0),
+                    '입찰마감': clean_date_strict(row.get('bidClseDt')),
+                    'URL': row.get('bidNtceDtlUrl', '')
+                })
+
+        status_st.empty()
+        if final_list:
+            df_final = pd.DataFrame(final_list)
+            st.success(f"🎯 수집 완료! 부장님 필터 통과 공고: {len(df_final)}건")
+            st.dataframe(df_final.style.format({'배정예산': '{:,}원'}), use_container_width=True)
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_final.to_excel(writer, index=False)
+            st.download_button(label="📥 통합 리포트 다운로드", data=output.getvalue(), file_name=f"나라장터_최종분석_{now.strftime('%m%d_%H%M')}.xlsx")
+        else:
+            st.warning("⚠️ 조건에 맞는 공고가 없습니다.")
