@@ -139,7 +139,7 @@ html, body, [class*="css"] {
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v2.3"
+VERSION     = "v2.5"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽",
@@ -263,114 +263,137 @@ def fetch_narajangter(keywords, start, end, test_mode):
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_d2b(keywords, start, end, test_mode):
     """
-    v2.3 수정: 국방부 마감일 기준 날짜 범위 수정
-    - 기존: start~end (과거 7일 내 마감) → 이미 마감된 것만 나와 0건
-    - 수정: (오늘-3일) ~ (오늘+30일) → 현재 진행 중인 공고 포착
-    - 공고 기준일 조회가 아닌 "마감일이 앞으로 30일 이내"인 공고를 보여주는 개념
+    v2.5 원본(국방부_필터링_완성_최종.py) 로직 반영
+    핵심 수정:
+    1) 일반입찰 날짜 필터 제거 → 원본과 동일하게 전체 조회 후 키워드+지역만 필터
+       (마감일 30일 필터가 군부대 공고 대부분을 걸러내고 있었음)
+    2) pblancOdr → str(...).split('.')[0] 처리 (float 1.0 → "1")
+    3) 공개수의는 날짜 서버파라미터 유지 (오늘-10 ~ 오늘+20)
     """
     results   = []
     today_str = TODAY.strftime("%Y%m%d")
-    # ★ 마감일 범위: 오늘 -3일 ~ 오늘 +30일 (현재 활성 공고 포착)
-    clos_start = (TODAY - timedelta(days=3)).strftime("%Y%m%d")
-    clos_end   = (TODAY + timedelta(days=30)).strftime("%Y%m%d")
+    # 국방부 마감일 기준: 오늘 ~ 오늘+7일 (현재 진행중, 곧 마감되는 공고)
+    d2b_close_start = TODAY.strftime("%Y%m%d")
+    d2b_close_end   = (TODAY + timedelta(days=7)).strftime("%Y%m%d")
 
     url_bid = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList"
     url_det = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancDetail"
     try:
         res_b = requests.get(url_bid,
-            params={'serviceKey':SERVICE_KEY,'numOfRows':'500','_type':'json'},
-            headers=HEADERS,timeout=15)
-        if res_b.status_code==200:
-            items=res_b.json().get('response',{}).get('body',{}).get('items',{}).get('item',[])
-            items=[items] if isinstance(items,dict) else (items or [])
+            params={'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'},
+            headers=HEADERS, timeout=15)
+        if res_b.status_code == 200:
+            items = res_b.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
+            items = [items] if isinstance(items, dict) else (items or [])
             for it in items:
-                bid_nm=it.get('bidNm','')
-                matched_kw=[kw for kw in keywords if kw in bid_nm]
+                bid_nm = it.get('bidNm', '')
+                matched_kw = [kw for kw in keywords if kw in bid_nm]
                 if not matched_kw: continue
-                clos_dt=str(it.get('biddocPresentnClosDt','') or '').replace('.0','').strip()[:8]
-                # ★ 마감일 범위 체크 (오늘-3 ~ 오늘+30)
-                if clos_dt and not (clos_start<=clos_dt<=clos_end): continue
-                p_det={'serviceKey':SERVICE_KEY,'_type':'json',
-                       'pblancNo':it.get('pblancNo'),'pblancOdr':it.get('pblancOdr'),
-                       'demandYear':it.get('demandYear'),'orntCode':it.get('orntCode'),
-                       'dcsNo':it.get('dcsNo')}
-                area,open_dt,budget,g2b_no,lcns="제한없음",it.get('opengDt','-'),0,None,"제한없음"
-                det={}
+                # ★ 마감일 기준 7일 필터: 오늘~오늘+7일 마감 공고만
+                clos_dt = str(it.get('biddocPresentnClosDt','') or '').replace('.0','').strip()[:8]
+                if clos_dt and not (d2b_close_start <= clos_dt <= d2b_close_end): continue
+                p_no  = it.get('pblancNo') or ''
+                p_det = {
+                    'serviceKey': SERVICE_KEY, '_type': 'json',
+                    'pblancNo': p_no,
+                    'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0],  # ★ float → int 변환
+                    'demandYear': str(it.get('demandYear', '')),
+                    'orntCode': it.get('orntCode'),
+                    'dcsNo': str(it.get('dcsNo', '')),
+                }
+                area, open_dt, budget, g2b_no, lcns = "제한없음", it.get('opengDt', '-'), 0, None, "제한없음"
+                det = {}
                 try:
-                    det=requests.get(url_det,params=p_det,headers=HEADERS,timeout=8)\
-                        .json().get('response',{}).get('body',{}).get('item',{})
-                    if isinstance(det,dict):
-                        area=det.get('areaLmttList') or "제한없음"
-                        open_dt=det.get('opengDt') or open_dt
-                        budget=det.get('budgetAmount') or it.get('budgetAmount') or 0
-                        g2b_no=det.get('g2bPblancNo')
-                        lcns=det.get('lcnsLmttList') or "제한없음"
+                    det = requests.get(url_det, params=p_det, headers=HEADERS, timeout=8) \
+                              .json().get('response', {}).get('body', {}).get('item', {})
+                    if isinstance(det, dict):
+                        area    = det.get('areaLmttList') or "제한없음"
+                        open_dt = det.get('opengDt') or open_dt
+                        budget  = det.get('budgetAmount') or it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
+                        g2b_no  = det.get('g2bPblancNo')
+                        lcns    = det.get('lcnsLmttList') or "제한없음"
                 except: pass
-                if not region_pass(area,test_mode): continue
-                if lcns not in ("","제한없음") and not license_code_pass(lcns,test_mode): continue
-                results.append(to_row(source='국방부(일반경쟁)',
-                    notice_no=g2b_no or it.get('pblancNo','-'),
-                    title=bid_nm,agency=it.get('ornt','-'),
-                    notice_dt=format_d2b_dt(it.get('pblancDate','-')),
-                    close_dt=format_d2b_dt(it.get('biddocPresentnClosDt','-')),
+                # 진행중 공고만 (원본 progrsSttus 체크)
+                status = it.get('progrsSttus') or ''
+                if status and '진행중' not in status and status != '': continue
+                if not region_pass(area, test_mode): continue
+                if lcns not in ("", "제한없음") and not license_code_pass(lcns, test_mode): continue
+                results.append(to_row(
+                    source='국방부(일반경쟁)',
+                    notice_no=g2b_no or p_no or '-',
+                    title=bid_nm, agency=it.get('ornt', '-'),
+                    notice_dt=format_d2b_dt(it.get('pblancDate', '-')),
+                    close_dt=format_d2b_dt(it.get('biddocPresentnClosDt', '-')),
                     open_dt=format_d2b_dt(open_dt),
-                    amount=int(pd.to_numeric(budget,errors='coerce') or 0),
-                    region=area,license_info=lcns,keyword=','.join(matched_kw),url=D2B_HOME))
+                    amount=int(pd.to_numeric(budget, errors='coerce') or 0),
+                    region=area, license_info=lcns,
+                    keyword=','.join(matched_kw), url=D2B_HOME,
+                ))
     except: pass
 
-    url_priv="http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanList"
-    url_pdet="http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanDetail"
+    # 공개수의 - 마감일 서버파라미터 (오늘-10 ~ 오늘+20)
+    url_priv = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanList"
+    url_pdet = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanDetail"
     try:
-        res_p=requests.get(url_priv,
-            params={'serviceKey':SERVICE_KEY,'_type':'json','numOfRows':'500',
-                    'prqudoPresentnClosDateBegin':clos_start,
-                    'prqudoPresentnClosDateEnd':clos_end},
-            headers=HEADERS,timeout=15)
-        if res_p.status_code==200:
-            items=res_p.json().get('response',{}).get('body',{}).get('items',{}).get('item',[])
-            items=[items] if isinstance(items,dict) else (items or [])
+        res_p = requests.get(url_priv,
+            params={'serviceKey': SERVICE_KEY, '_type': 'json', 'numOfRows': '500',
+                    'prqudoPresentnClosDateBegin': d2b_close_start,
+                    'prqudoPresentnClosDateEnd':   d2b_close_end},
+            headers=HEADERS, timeout=15)
+        if res_p.status_code == 200:
+            items = res_p.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
+            items = [items] if isinstance(items, dict) else (items or [])
             for it in items:
-                bid_nm=it.get('othbcNtatNm','')
-                matched_kw=[kw for kw in keywords if kw in bid_nm]
+                bid_nm = it.get('othbcNtatNm', '')
+                matched_kw = [kw for kw in keywords if kw in bid_nm]
                 if not matched_kw: continue
-                p_det={'serviceKey':SERVICE_KEY,'_type':'json',
-                       'pblancNo':it.get('pblancNo'),'pblancOdr':it.get('pblancOdr'),
-                       'demandYear':it.get('demandYear'),'orntCode':it.get('orntCode'),
-                       'dcsNo':it.get('dcsNo'),'iemNo':it.get('iemNo'),
-                       'ntatPlanDate':it.get('ntatPlanDate')}
-                area,open_dt,budget,g2b_no,lcns="제한없음",it.get('opengDt','-'),0,None,"제한없음"
-                det={}
+                p_no  = it.get('pblancNo') or ''
+                p_det = {
+                    'serviceKey': SERVICE_KEY, '_type': 'json',
+                    'pblancNo': p_no,
+                    'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0],  # ★ float → int 변환
+                    'demandYear': str(it.get('demandYear', '')),
+                    'orntCode': it.get('orntCode'),
+                    'dcsNo': str(it.get('dcsNo', '')),
+                    'iemNo': it.get('iemNo'),
+                    'ntatPlanDate': it.get('ntatPlanDate'),
+                }
+                area, open_dt, budget, g2b_no, lcns = "제한없음", it.get('opengDt', '-'), 0, None, "제한없음"
+                det = {}
                 try:
-                    det=requests.get(url_pdet,params=p_det,headers=HEADERS,timeout=8)\
-                        .json().get('response',{}).get('body',{}).get('item',{})
-                    if isinstance(det,dict):
-                        area=det.get('areaLmttList') or "제한없음"
-                        open_dt=det.get('opengDt') or open_dt
-                        budget=det.get('budgetAmount') or it.get('budgetAmount') or 0
-                        g2b_no=det.get('g2bPblancNo')
-                        lcns=det.get('lcnsLmttList') or "제한없음"
+                    det = requests.get(url_pdet, params=p_det, headers=HEADERS, timeout=8) \
+                              .json().get('response', {}).get('body', {}).get('item', {})
+                    if isinstance(det, dict):
+                        area    = det.get('areaLmttList') or "제한없음"
+                        open_dt = det.get('opengDt') or open_dt
+                        budget  = det.get('budgetAmount') or it.get('budgetAmount') or 0
+                        g2b_no  = det.get('g2bPblancNo')
+                        lcns    = det.get('lcnsLmttList') or "제한없음"
                 except: pass
-                if not region_pass(area,test_mode): continue
-                if lcns not in ("","제한없음") and not license_code_pass(lcns,test_mode): continue
-                results.append(to_row(source='국방부(공개수의)',
-                    notice_no=g2b_no or it.get('pblancNo','-'),
-                    title=bid_nm,agency=it.get('ornt','-'),notice_dt='-',
-                    close_dt=format_d2b_dt(it.get('prqudoPresentnClosDt','-')),
+                if not region_pass(area, test_mode): continue
+                if lcns not in ("", "제한없음") and not license_code_pass(lcns, test_mode): continue
+                results.append(to_row(
+                    source='국방부(공개수의)',
+                    notice_no=g2b_no or p_no or '-',
+                    title=bid_nm, agency=it.get('ornt', '-'),
+                    notice_dt='-',
+                    close_dt=format_d2b_dt(it.get('prqudoPresentnClosDt', '-')),
                     open_dt=format_d2b_dt(open_dt),
-                    amount=int(pd.to_numeric(budget,errors='coerce') or 0),
-                    region=area,license_info=lcns,keyword=','.join(matched_kw),url=D2B_HOME))
+                    amount=int(pd.to_numeric(budget, errors='coerce') or 0),
+                    region=area, license_info=lcns,
+                    keyword=','.join(matched_kw), url=D2B_HOME,
+                ))
     except: pass
 
-    seen,dedup=set(),[]
+    seen, dedup = set(), []
     for r in results:
-        key=(r['출처기관'],r['공고번호'])
+        key = (r['출처기관'], r['공고번호'])
         if key not in seen: seen.add(key); dedup.append(r)
         else:
             for d in dedup:
-                if (d['출처기관'],d['공고번호'])==key and r['매칭키워드'] not in d['매칭키워드']:
-                    d['매칭키워드']+=f",{r['매칭키워드']}"
+                if (d['출처기관'], d['공고번호']) == key and r['매칭키워드'] not in d['매칭키워드']:
+                    d['매칭키워드'] += f",{r['매칭키워드']}"
     return dedup
-
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_lh(keywords, start, end, test_mode):
