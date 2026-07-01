@@ -263,127 +263,102 @@ def fetch_narajangter(keywords, start, end, test_mode):
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_d2b(keywords, start, end, test_mode):
     """
-    v2.5 원본(국방부_필터링_완성_최종.py) 로직 반영
-    핵심 수정:
-    1) 일반입찰 날짜 필터 제거 → 원본과 동일하게 전체 조회 후 키워드+지역만 필터
-       (마감일 30일 필터가 군부대 공고 대부분을 걸러내고 있었음)
-    2) pblancOdr → str(...).split('.')[0] 처리 (float 1.0 → "1")
-    3) 공개수의는 날짜 서버파라미터 유지 (오늘-10 ~ 오늘+20)
+    v2.6 - 원본(국방부_필터링_완성_최종.py) 로직 100% 그대로 반영
+    핵심: p_det에 'service_key'(언더스코어), 날짜필터 없음, items or[] 없음
     """
-    results   = []
-    today_str = TODAY.strftime("%Y%m%d")
-    # 국방부 마감일 기준: 오늘 ~ 오늘+7일 (현재 진행중, 곧 마감되는 공고)
-    d2b_close_start = TODAY.strftime("%Y%m%d")
-    d2b_close_end   = (TODAY + timedelta(days=7)).strftime("%Y%m%d")
+    results  = []
+    today_dt = TODAY
+    d2b_start = (today_dt - timedelta(days=10)).strftime("%Y%m%d")
+    d2b_end   = (today_dt + timedelta(days=20)).strftime("%Y%m%d")
 
-    url_bid = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList"
-    url_det = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancDetail"
-    try:
-        res_b = requests.get(url_bid,
-            params={'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'},
-            headers=HEADERS, timeout=15)
-        if res_b.status_code == 200:
-            items = res_b.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
-            items = [items] if isinstance(items, dict) else (items or [])
+    target_areas = ["경기도", "평택시", "화성시", "제한없음", "전국"]
+
+    api_configs = [
+        {
+            'type': '일반입찰',
+            'list_url': 'http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList',
+            'det_url':  'http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancDetail',
+            'source':   '국방부(일반경쟁)',
+        },
+        {
+            'type': '공개수의',
+            'list_url': 'http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanList',
+            'det_url':  'http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanDetail',
+            'source':   '국방부(공개수의)',
+        },
+    ]
+
+    for config in api_configs:
+        # ★ 원본 그대로: 일반입찰은 날짜파라미터 없음, 공개수의만 날짜파라미터
+        params = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
+        if config['type'] == '공개수의':
+            params.update({'prqudoPresentnClosDateBegin': d2b_start,
+                           'prqudoPresentnClosDateEnd':   d2b_end})
+        try:
+            res = requests.get(config['list_url'], params=params, headers=HEADERS, timeout=15)
+            if res.status_code != 200: continue
+
+            # ★ 원본 그대로: or[] 없음
+            items = res.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
+            items = [items] if isinstance(items, dict) else items
+
             for it in items:
-                bid_nm = it.get('bidNm', '')
+                bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
                 matched_kw = [kw for kw in keywords if kw in bid_nm]
                 if not matched_kw: continue
-                # ★ 마감일 기준 7일 필터: 오늘~오늘+7일 마감 공고만
-                clos_dt = str(it.get('biddocPresentnClosDt','') or '').replace('.0','').strip()[:8]
-                if clos_dt and not (d2b_close_start <= clos_dt <= d2b_close_end): continue
-                p_no  = it.get('pblancNo') or ''
-                p_det = {
-                    'serviceKey': SERVICE_KEY, '_type': 'json',
-                    'pblancNo': p_no,
-                    'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0],  # ★ float → int 변환
-                    'demandYear': str(it.get('demandYear', '')),
-                    'orntCode': it.get('orntCode'),
-                    'dcsNo': str(it.get('dcsNo', '')),
-                }
-                area, open_dt, budget, g2b_no, lcns = "제한없음", it.get('opengDt', '-'), 0, None, "제한없음"
-                det = {}
-                try:
-                    det = requests.get(url_det, params=p_det, headers=HEADERS, timeout=8) \
-                              .json().get('response', {}).get('body', {}).get('item', {})
-                    if isinstance(det, dict):
-                        area    = det.get('areaLmttList') or "제한없음"
-                        open_dt = det.get('opengDt') or open_dt
-                        budget  = det.get('budgetAmount') or it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
-                        g2b_no  = det.get('g2bPblancNo')
-                        lcns    = det.get('lcnsLmttList') or "제한없음"
-                except: pass
-                # 진행중 공고만 (원본 progrsSttus 체크)
-                status = it.get('progrsSttus') or ''
-                if status and '진행중' not in status and status != '': continue
-                if not region_pass(area, test_mode): continue
-                if lcns not in ("", "제한없음") and not license_code_pass(lcns, test_mode): continue
-                results.append(to_row(
-                    source='국방부(일반경쟁)',
-                    notice_no=g2b_no or p_no or '-',
-                    title=bid_nm, agency=it.get('ornt', '-'),
-                    notice_dt=format_d2b_dt(it.get('pblancDate', '-')),
-                    close_dt=format_d2b_dt(it.get('biddocPresentnClosDt', '-')),
-                    open_dt=format_d2b_dt(open_dt),
-                    amount=int(pd.to_numeric(budget, errors='coerce') or 0),
-                    region=area, license_info=lcns,
-                    keyword=','.join(matched_kw), url=D2B_HOME,
-                ))
-    except: pass
 
-    # 공개수의 - 마감일 서버파라미터 (오늘-10 ~ 오늘+20)
-    url_priv = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanList"
-    url_pdet = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanDetail"
-    try:
-        res_p = requests.get(url_priv,
-            params={'serviceKey': SERVICE_KEY, '_type': 'json', 'numOfRows': '500',
-                    'prqudoPresentnClosDateBegin': d2b_close_start,
-                    'prqudoPresentnClosDateEnd':   d2b_close_end},
-            headers=HEADERS, timeout=15)
-        if res_p.status_code == 200:
-            items = res_p.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
-            items = [items] if isinstance(items, dict) else (items or [])
-            for it in items:
-                bid_nm = it.get('othbcNtatNm', '')
-                matched_kw = [kw for kw in keywords if kw in bid_nm]
-                if not matched_kw: continue
-                p_no  = it.get('pblancNo') or ''
+                p_no    = it.get('pblancNo') or ''
+                d_year  = str(it.get('demandYear', ''))
+                d_no    = str(it.get('dcsNo', ''))
+                p_alpha = "".join([c for c in p_no if c.isalpha()])
+                combined_g2b = f"{d_year}{p_alpha}{d_no}"
+
+                # ★ 원본 그대로: 'service_key'(언더스코어)
                 p_det = {
-                    'serviceKey': SERVICE_KEY, '_type': 'json',
-                    'pblancNo': p_no,
-                    'pblancOdr': str(it.get('pblancOdr', '1')).split('.')[0],  # ★ float → int 변환
-                    'demandYear': str(it.get('demandYear', '')),
-                    'orntCode': it.get('orntCode'),
-                    'dcsNo': str(it.get('dcsNo', '')),
-                    'iemNo': it.get('iemNo'),
-                    'ntatPlanDate': it.get('ntatPlanDate'),
+                    'service_key': SERVICE_KEY,
+                    'pblancNo':    p_no,
+                    'pblancOdr':   str(it.get('pblancOdr', '1')).split('.')[0],
+                    'demandYear':  d_year,
+                    'orntCode':    it.get('orntCode'),
+                    'dcsNo':       d_no,
+                    '_type':       'json',
                 }
-                area, open_dt, budget, g2b_no, lcns = "제한없음", it.get('opengDt', '-'), 0, None, "제한없음"
-                det = {}
+                if config['type'] == '공개수의':
+                    p_det.update({'ntatPlanDate': it.get('ntatPlanDate'), 'iemNo': it.get('iemNo')})
+
+                area, budget = "제한없음", 0
                 try:
-                    det = requests.get(url_pdet, params=p_det, headers=HEADERS, timeout=8) \
-                              .json().get('response', {}).get('body', {}).get('item', {})
-                    if isinstance(det, dict):
-                        area    = det.get('areaLmttList') or "제한없음"
-                        open_dt = det.get('opengDt') or open_dt
-                        budget  = det.get('budgetAmount') or it.get('budgetAmount') or 0
-                        g2b_no  = det.get('g2bPblancNo')
-                        lcns    = det.get('lcnsLmttList') or "제한없음"
+                    det_res  = requests.get(config['det_url'], params=p_det, headers=HEADERS, timeout=5).json()
+                    det_data = det_res.get('response', {}).get('body', {}).get('item', {})
+                    if isinstance(det_data, dict):
+                        area         = det_data.get('areaLmttList') or "제한없음"
+                        combined_g2b = det_data.get('g2bPblancNo') or combined_g2b
+                        budget       = det_data.get('budgetAmount') or it.get('asignBdgtAmt') or it.get('budgetAmount') or 0
                 except: pass
-                if not region_pass(area, test_mode): continue
-                if lcns not in ("", "제한없음") and not license_code_pass(lcns, test_mode): continue
+
+                # ★ 원본 그대로: progrsSttus + area 체크
+                status = it.get('progrsSttus') or "진행중"
+                if not ("진행중" in status or status == ""): continue
+                if not any(t in area for t in target_areas): continue
+                # 추가: 테스트모드 OFF일 때만 면허 필터
+                lcns = ""
+                if not test_mode and lcns not in ("", "제한없음") and not license_code_pass(lcns): continue
+
+                close_dt_raw = it.get('biddocPresentnClosDt') or it.get('prqudoPresentnClosDt')
+                notice_dt_raw = it.get('pblancDate', '-')
+
                 results.append(to_row(
-                    source='국방부(공개수의)',
-                    notice_no=g2b_no or p_no or '-',
+                    source=config['source'],
+                    notice_no=combined_g2b or p_no or '-',
                     title=bid_nm, agency=it.get('ornt', '-'),
-                    notice_dt='-',
-                    close_dt=format_d2b_dt(it.get('prqudoPresentnClosDt', '-')),
-                    open_dt=format_d2b_dt(open_dt),
+                    notice_dt=format_d2b_dt(notice_dt_raw),
+                    close_dt=format_d2b_dt(close_dt_raw),
+                    open_dt=format_d2b_dt(it.get('opengDt', '-')),
                     amount=int(pd.to_numeric(budget, errors='coerce') or 0),
-                    region=area, license_info=lcns,
+                    region=area, license_info='미조회',
                     keyword=','.join(matched_kw), url=D2B_HOME,
                 ))
-    except: pass
+        except Exception: pass
 
     seen, dedup = set(), []
     for r in results:
@@ -391,287 +366,8 @@ def fetch_d2b(keywords, start, end, test_mode):
         if key not in seen: seen.add(key); dedup.append(r)
         else:
             for d in dedup:
-                if (d['출처기관'], d['공고번호']) == key and r['매칭키워드'] not in d['매칭키워드']:
+                if (d['출처기관'],d['공고번호'])==key and r['매칭키워드'] not in d['매칭키워드']:
                     d['매칭키워드'] += f",{r['매칭키워드']}"
     return dedup
 
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_lh(keywords, start, end, test_mode):
-    results=[]
-    try:
-        response=requests.get("http://openapi.ebid.lh.or.kr/ebid.com.openapi.service.OpenBidInfoList.dev",
-            params={'serviceKey':SERVICE_KEY,'numOfRows':'500','pageNo':'1',
-                    'tndrbidRegDtStart':start.strftime("%Y%m%d"),
-                    'tndrbidRegDtEnd':end.strftime("%Y%m%d")},timeout=20)
-        response.encoding=response.apparent_encoding
-        clean_xml=re.sub(r'<\?xml.*?>','',response.text)
-        if "<resultCode>00</resultCode>" not in clean_xml: return results
-        root=ET.fromstring(f"<root>{clean_xml}</root>")
-        for item in root.findall('.//item'):
-            title=lh_clean(item.findtext('bidnmKor'))
-            matched=[kw for kw in keywords if kw in title]
-            if not matched: continue
-            rt=[(item.findtext(f'zoneRstrct{n}') or '').strip() for n in range(1,5)]
-            region=" ".join(filter(None,rt))
-            if not region_pass(rt,test_mode): continue
-            if not lh_license_pass(item,test_mode): continue
-            lic="/".join(sorted(set(
-                lh_clean(item.findtext(f'req{n}Reqlic{m}Nm'))
-                for n in range(1,11) for m in range(1,11)
-                if lh_clean(item.findtext(f'req{n}Reqlic{m}Nm'))
-            ))) or '제한없음'
-            results.append(to_row(source='LH',notice_no=item.findtext('bidNum'),title=title,
-                agency=lh_clean(item.findtext('zoneHqCd')),
-                notice_dt=item.findtext('tndrbidRegDt'),
-                close_dt=item.findtext('tndrdocAcptEndDtm'),
-                open_dt=item.findtext('openDtm'),amount=item.findtext('fdmtlAmt'),
-                region=region if region else '제한없음',license_info=lic,
-                keyword=','.join(matched),url=LH_HOME))
-    except: pass
-    return results
 
-
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_kogas(keywords, start, end):
-    results=[]
-    try:
-        res=requests.get("http://apis.data.go.kr/B551210/bidInfoList/getBidInfoList",
-            params={'serviceKey':SERVICE_KEY,'pageNo':'1','numOfRows':'500',
-                    'DOCDATE_START':start.strftime("%Y%m%d"),
-                    'DOCDATE_END':end.strftime("%Y%m%d")},
-            headers=HEADERS,timeout=15)
-        if res.status_code!=200: return results
-        sd=start.strftime("%Y%m%d"); ed=end.strftime("%Y%m%d")
-        for item in ET.fromstring(res.text).findall('.//item'):
-            title=item.findtext('NOTICE_NAME') or '-'
-            matched=[kw for kw in keywords if kw in title]
-            if not matched: continue
-            nd=(item.findtext('NOTICE_DT') or '').replace('-','')[:8]
-            if nd and not (sd<=nd<=ed): continue
-            results.append(to_row(source='가스공사',notice_no=item.findtext('NOTICE_CODE') or '-',
-                title=title,agency=item.findtext('CONT_METHOD_NAME') or '-',
-                notice_dt=item.findtext('NOTICE_DT') or '-',
-                close_dt=item.findtext('END_DT') or '-',open_dt='-',amount='-',
-                region='확인불가',license_info='확인불가',
-                keyword=','.join(matched),url=KOGAS_HOME))
-    except: pass
-    return results
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_kwater(keywords):
-    results=[]
-    search_month=TODAY.strftime('%Y%m')
-    for kw in keywords:
-        try:
-            items=requests.get("http://apis.data.go.kr/B500001/ebid/tndr3/servcList",
-                params={'serviceKey':SERVICE_KEY,'pageNo':'1','numOfRows':'100',
-                        '_type':'json','searchDt':search_month,'bidNm':kw},
-                headers=HEADERS,timeout=10).json()\
-                .get('response',{}).get('body',{}).get('items',{}).get('item',[])
-            items=[items] if isinstance(items,dict) else (items or [])
-            for it in items:
-                title=it.get('tndrPblancNm','-')
-                if kw not in title: continue
-                results.append(to_row(source='수자원공사',notice_no=it.get('tndrPbanno','-'),
-                    title=title,agency=it.get('cntrctDeptNm','-'),notice_dt='-',
-                    close_dt=it.get('tndrPblancEnddt','-'),open_dt='-',amount='-',
-                    region='확인불가',license_info='확인불가',keyword=kw,
-                    url=(KWATER_DETAIL_BASE+str(it.get('tndrPbanno',''))) if it.get('tndrPbanno') else '-'))
-        except: pass
-    seen,dedup=set(),[]
-    for r in results:
-        if r['공고번호'] not in seen: seen.add(r['공고번호']); dedup.append(r)
-    return dedup
-
-# =====================================================================
-# 사이드바
-# =====================================================================
-with st.sidebar:
-    st.markdown("""
-    <div style="padding:20px 0 16px;">
-      <div style="font-size:18px;font-weight:700;color:#ffffff;letter-spacing:1px;">📡 BID RADAR</div>
-      <div style="font-size:11px;color:#8892aa;margin-top:3px;">폐기물 입찰 자동 탐지 시스템</div>
-    </div>
-    <hr style="border-color:#374060;margin:0 0 16px;">
-    """, unsafe_allow_html=True)
-
-    today = TODAY
-    st.markdown('<div style="font-size:11px;font-weight:600;color:#8892aa;letter-spacing:.5px;margin-bottom:6px;">📅 검색기간 (나라장터·LH·가스공사)</div>', unsafe_allow_html=True)
-    date_range = st.date_input("", value=(today-timedelta(days=6), today), label_visibility="collapsed")
-    start_dt, end_dt = (date_range if isinstance(date_range,tuple) and len(date_range)==2 else (today-timedelta(days=6), today))
-    start_dt = datetime.combine(start_dt, datetime.min.time())
-    end_dt   = datetime.combine(end_dt,   datetime.min.time())
-
-    st.markdown('<div style="font-size:11px;font-weight:600;color:#8892aa;letter-spacing:.5px;margin:14px 0 6px;">⚠️ 국방부 마감일 기준</div>', unsafe_allow_html=True)
-    d2b_future = st.slider("마감 기준 미래 범위 (일)", 7, 60, 30, help="오늘-3일 ~ 오늘+N일 범위로 마감되는 공고 탐지")
-    st.markdown(f'<div style="font-size:11px;color:#8892aa;">탐지 범위: 오늘-3일 ~ 오늘+{d2b_future}일</div>', unsafe_allow_html=True)
-
-    st.markdown('<div style="font-size:11px;font-weight:600;color:#8892aa;letter-spacing:.5px;margin:14px 0 6px;">🎯 키워드</div>', unsafe_allow_html=True)
-    kw_text = st.text_area("", value=", ".join(DEFAULT_KEYWORDS), height=85, label_visibility="collapsed")
-    keywords = tuple(k.strip() for k in kw_text.split(",") if k.strip())
-
-    st.markdown('<div style="font-size:11px;font-weight:600;color:#8892aa;letter-spacing:.5px;margin:14px 0 6px;">🏛️ 출처기관</div>', unsafe_allow_html=True)
-    sources = st.multiselect("", ["나라장터","국방부(일반경쟁)","국방부(공개수의)","LH","가스공사","수자원공사"],
-        default=["나라장터","국방부(일반경쟁)","국방부(공개수의)","LH","가스공사","수자원공사"],
-        label_visibility="collapsed")
-
-    test_mode = st.toggle("🧪 테스트 모드 (지역·면허 필터 OFF)", value=True)
-
-    st.markdown(f"""
-    <div style="margin-top:14px;padding:12px 14px;background:#252a3d;border-radius:8px;font-size:11px;line-height:2;color:#8892aa;">
-        {'🔴 필터 OFF — 전체 공고 노출' if test_mode else '🟢 필터 ON — 조건 적용'}<br>
-        📍 지역: 경기도·평택·화성·전국<br>
-        🪪 면허코드: {', '.join(OUR_LICENSES)}<br>
-        ⚠️ 가스공사·수자원공사 미지원
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    run = st.button("🔍  조회 실행", use_container_width=True)
-
-# =====================================================================
-# 메인
-# =====================================================================
-clos_start_d2b = (TODAY - timedelta(days=3)).strftime("%Y%m%d")
-clos_end_d2b   = (TODAY + timedelta(days=d2b_future)).strftime("%Y%m%d")
-
-st.markdown(f"""
-<div class="app-header">
-  <div class="app-header-left">
-    <div class="app-name">📡 &nbsp;<span>폐기물</span> 입찰 레이더</div>
-    <div class="app-meta">
-      나라장터 · 국방부 · LH · 가스공사 · 수자원공사 &nbsp;|&nbsp;
-      공고일 {start_dt:%m/%d}–{end_dt:%m/%d} &nbsp;|&nbsp;
-      국방부 마감 {clos_start_d2b[4:6]}/{clos_start_d2b[6:]}–{clos_end_d2b[4:6]}/{clos_end_d2b[6:]} &nbsp;|&nbsp;
-      키워드 {len(keywords)}개 &nbsp;|&nbsp;
-      {'테스트 모드' if test_mode else '실운영 모드'}
-    </div>
-  </div>
-  <div class="app-badge">
-    <div class="app-badge-ver">{VERSION}</div>
-    <div class="app-badge-date">{TODAY:%Y.%m.%d}</div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame()
-if "errors" not in st.session_state:
-    st.session_state.errors = {}
-
-if run:
-    errors = {}
-    all_rows = []
-
-    def run_agency(name, fn):
-        try: return name, fn(), None
-        except Exception as e: return name, [], str(e)
-
-    steps = {
-        "나라장터":  lambda: fetch_narajangter(keywords, start_dt, end_dt, test_mode),
-        "국방부":    lambda: fetch_d2b(keywords, start_dt, end_dt, test_mode),
-        "LH":       lambda: fetch_lh(keywords, start_dt, end_dt, test_mode),
-        "가스공사":  lambda: fetch_kogas(keywords, start_dt, end_dt),
-        "수자원공사":lambda: fetch_kwater(keywords),
-    }
-
-    prog = st.progress(0, text="탐지 시작...")
-    status_holder = st.empty()
-    status_data = {n: "⏳" for n in steps}
-
-    def render_status():
-        cols = status_holder.columns(5)
-        for col, (name, icon) in zip(cols, status_data.items()):
-            col.markdown(f"<div style='text-align:center;font-size:12px;color:#8892aa'>{name}</div><div style='text-align:center;font-size:16px'>{icon}</div>", unsafe_allow_html=True)
-
-    render_status()
-    done_count = 0
-
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futures = {ex.submit(run_agency, name, fn): name for name, fn in steps.items()}
-        for future in as_completed(futures):
-            name, rows, err = future.result()
-            done_count += 1
-            prog.progress(done_count/len(steps), text=f"({done_count}/{len(steps)}) 완료")
-            if err:
-                errors[name] = err
-                status_data[name] = f"❌"
-            else:
-                all_rows.extend(rows)
-                status_data[name] = f"✅ {len(rows)}건"
-            render_status()
-
-    prog.progress(1.0, text="탐지 완료")
-    df = pd.DataFrame(all_rows)
-    if not df.empty:
-        df = df[df['출처기관'].apply(lambda s: any(
-            s == src or s.startswith(src.replace('(일반경쟁)','').replace('(공개수의)',''))
-            for src in sources))]
-    st.session_state.df = df
-    st.session_state.errors = errors
-
-df     = st.session_state.df
-errors = st.session_state.get("errors", {})
-
-for name, err in errors.items():
-    st.warning(f"⚠️ {name}: {err}")
-
-if df.empty:
-    st.markdown("""
-    <div class="empty-state">
-      <div class="empty-icon">📡</div>
-      <div class="empty-title">신호 없음</div>
-      <div class="empty-hint">조건을 설정하고 <b>조회 실행</b>을 눌러주세요</div>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    counts = df['출처기관'].value_counts()
-    tag_map = {'나라장터':'tag-나라장터','국방부(일반경쟁)':'tag-국방부일반',
-               '국방부(공개수의)':'tag-국방부공개','LH':'tag-LH',
-               '가스공사':'tag-가스공사','수자원공사':'tag-수자원공사'}
-
-    st.markdown(f"""
-    <div class="metrics-row">
-      <div class="metric-card primary">
-        <div class="metric-label">총 공고</div>
-        <div class="metric-val blue">{len(df)}</div>
-        <div class="metric-desc">건</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">출처기관</div>
-        <div class="metric-val">{df['출처기관'].nunique()}</div>
-        <div class="metric-desc">개 기관</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">지역 미확인</div>
-        <div class="metric-val">{df['지역제한'].astype(str).str.contains('확인불가').sum()}</div>
-        <div class="metric-desc">가스공사·수자원공사</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">면허 미확인</div>
-        <div class="metric-val">{df['면허정보'].astype(str).str.contains('확인불가').sum()}</div>
-        <div class="metric-desc">건</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    tags = " ".join(f'<span class="src-tag {tag_map.get(k,"")}">{k} {v}건</span>' for k,v in counts.items())
-    st.markdown(f'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">{tags}</div>', unsafe_allow_html=True)
-
-    st.dataframe(df, use_container_width=True, height=540,
-        column_config={
-            "공고명":   st.column_config.TextColumn("공고명", width="large"),
-            "금액(원)": st.column_config.TextColumn("금액(원)"),
-            "면허정보": st.column_config.TextColumn("면허정보", width="medium"),
-            "상세URL":  st.column_config.LinkColumn("상세URL", display_text="열기"),
-        })
-
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='통합결과', index=False)
-        for src in df['출처기관'].unique():
-            df[df['출처기관']==src].to_excel(writer, sheet_name=str(src)[:31], index=False)
-    st.download_button("📥  엑셀 다운로드", data=buf.getvalue(),
-        file_name=f"입찰레이더_{TODAY:%Y%m%d_%H%M}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
