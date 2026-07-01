@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-통합 입찰공고 레이더 (Streamlit 웹앱)
+통합 입찰공고 레이더 (Streamlit 웹앱) ── v2.1 (2026-07-01)
 나라장터 / 국방부 / LH / 가스공사 / 수자원공사
 
-배포: GitHub(web_radar.py) + requirements.txt → Streamlit Cloud
+[변경 이력]
+v2.0  5개 기관 통합 / 국방부 bidNm 파라미터 버그 수정
+v2.1  버전 표시 및 조회 기준 명문화
+
+[조회 기준]
+검색기간  : 오늘 기준 7일
+키워드    : 폐기물/운반/폐목재/폐합성수지/잔재물/가연성/낙엽/식물성/부유물/초본류/초목류/임목/폐가구 (13개)
+지역필터  : 경기도·평택·화성·전국·제한없음 (나라장터/국방부/LH만 적용)
+면허필터  : 코드 1226·1227·6786·6770 (나라장터·국방부) / 텍스트 매칭 (LH)
+            가스공사·수자원공사는 면허 필드 없어 미적용
 """
 
 import streamlit as st
@@ -171,101 +180,6 @@ def fetch_narajangter(keywords, start, end, test_mode):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_d2b(keywords, start, end, test_mode):
-    """전체 조회 후 pblancDate(공고일자) 로컬 필터 — anmtDateBegin/End 파라미터 실제 미동작 확인"""
-    results   = []
-    start_day = start.strftime("%Y%m%d")
-    end_day   = end.strftime("%Y%m%d")
-
-    # 일반경쟁
-    url_l = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancList"
-    url_d = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcCmpetBidPblancDetail"
-    for kw in keywords:
-        try:
-            items = requests.get(url_l,
-                params={'serviceKey':SERVICE_KEY,'numOfRows':'400','_type':'json','bidNm':kw},
-                headers=HEADERS,timeout=15).json() \
-                .get('response',{}).get('body',{}).get('items',{}).get('item',[])
-            items = [items] if isinstance(items,dict) else (items or [])
-            for it in items:
-                pd_dt = str(it.get('pblancDate','')).replace('.0','').strip()[:8]
-                if pd_dt and not (start_day <= pd_dt <= end_day): continue
-                area,open_dt,budget,g2b_no,lcns = "제한없음",it.get('opengDt','-'),it.get('budgetAmount',0),None,""
-                try:
-                    det = requests.get(url_d,headers=HEADERS,timeout=8,
-                        params={'serviceKey':SERVICE_KEY,'_type':'json',
-                                'pblancNo':it.get('pblancNo'),'pblancOdr':it.get('pblancOdr'),
-                                'demandYear':it.get('demandYear'),'orntCode':it.get('orntCode'),
-                                'dcsNo':it.get('dcsNo')}).json() \
-                        .get('response',{}).get('body',{}).get('item',{})
-                    area=det.get('areaLmttList') or "제한없음"
-                    open_dt=det.get('opengDt') or open_dt
-                    budget=det.get('budgetAmount') or budget
-                    g2b_no=det.get('g2bPblancNo'); lcns=det.get('lcnsLmttList') or "제한없음"
-                except: pass
-                if not region_pass(area,test_mode): continue
-                if lcns not in ("","제한없음") and not license_code_pass(lcns,test_mode): continue
-                results.append(to_row(
-                    source='국방부(일반경쟁)', notice_no=g2b_no or it.get('pblancNo','-'),
-                    title=it.get('bidNm',''), agency=it.get('ornt','-'),
-                    notice_dt=format_d2b_dt(it.get('pblancDate','-')),
-                    close_dt=format_d2b_dt(it.get('biddocPresentnClosDt','-')),
-                    open_dt=format_d2b_dt(open_dt), amount=budget,
-                    region=area, license_info=lcns, keyword=kw, url=D2B_HOME,
-                ))
-        except: pass
-
-    # 공개수의
-    url_pl = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanList"
-    url_pd = "http://openapi.d2b.go.kr/openapi/service/BidPblancInfoService/getDmstcOthbcVltrnNtatPlanDetail"
-    for kw in keywords:
-        try:
-            items = requests.get(url_pl,
-                params={'serviceKey':SERVICE_KEY,'numOfRows':'400','_type':'json','othbcNtatNm':kw},
-                headers=HEADERS,timeout=15).json() \
-                .get('response',{}).get('body',{}).get('items',{}).get('item',[])
-            items = [items] if isinstance(items,dict) else (items or [])
-            for it in items:
-                plan_dt = str(it.get('ntatPlanDate','')).replace('.0','').strip()[:8]
-                if plan_dt and not (start_day <= plan_dt <= end_day): continue
-                area,open_dt,budget,g2b_no,lcns = "제한없음",it.get('opengDt','-'),it.get('budgetAmount',0),None,""
-                try:
-                    det = requests.get(url_pd,headers=HEADERS,timeout=8,
-                        params={'serviceKey':SERVICE_KEY,'_type':'json',
-                                'pblancNo':it.get('pblancNo'),'pblancOdr':it.get('pblancOdr'),
-                                'demandYear':it.get('demandYear'),'orntCode':it.get('orntCode'),
-                                'dcsNo':it.get('dcsNo'),'iemNo':it.get('iemNo'),
-                                'ntatPlanDate':it.get('ntatPlanDate')}).json() \
-                        .get('response',{}).get('body',{}).get('item',{})
-                    area=det.get('areaLmttList') or "제한없음"
-                    open_dt=det.get('opengDt') or open_dt
-                    budget=det.get('budgetAmount') or budget
-                    g2b_no=det.get('g2bPblancNo'); lcns=det.get('lcnsLmttList') or "제한없음"
-                except: pass
-                if not region_pass(area,test_mode): continue
-                if lcns not in ("","제한없음") and not license_code_pass(lcns,test_mode): continue
-                results.append(to_row(
-                    source='국방부(공개수의)', notice_no=g2b_no or it.get('pblancNo','-'),
-                    title=it.get('othbcNtatNm',''), agency=it.get('ornt','-'),
-                    notice_dt='-',
-                    close_dt=format_d2b_dt(it.get('prqudoPresentnClosDt','-')),
-                    open_dt=format_d2b_dt(open_dt), amount=budget,
-                    region=area, license_info=lcns, keyword=kw, url=D2B_HOME,
-                    extra='⚠️개찰예정일 기준 필터(공고일자 파라미터 없음)',
-                ))
-        except: pass
-
-    seen, dedup = set(), []
-    for r in results:
-        key=(r['출처기관'],r['공고번호'])
-        if key not in seen: seen.add(key); dedup.append(r)
-        else:
-            for d in dedup:
-                if (d['출처기관'],d['공고번호'])==key and r['매칭키워드'] not in d['매칭키워드']:
-                    d['매칭키워드']+=f",{r['매칭키워드']}"
-    return dedup
-
-
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_lh(keywords, start, end, test_mode):
     results   = []
@@ -344,7 +258,7 @@ def fetch_kwater(keywords):
                 params={'serviceKey':SERVICE_KEY,'pageNo':'1','numOfRows':'100',
                         '_type':'json','searchDt':search_month,'bidNm':kw},
                 headers=HEADERS, timeout=10).json() \
-                .get('response',{}).get('body',{}).get('items',{}).get('item',[])
+                .get('response',{}).get('body',{}).get('items') or {}
             items = [items] if isinstance(items,dict) else (items or [])
             for it in items:
                 title = it.get('tndrPblancNm','-')
@@ -397,9 +311,12 @@ run = st.sidebar.button("🔍 조회 실행", type="primary", use_container_widt
 # =====================================================================
 # 4. 메인 화면
 # =====================================================================
-st.title("입찰공고 통합 조회")
-st.caption(f"{'🧪 테스트 모드 (필터 OFF)' if test_mode else '✅ 실운영 모드 (필터 ON)'} │ "
-           f"{start_dt:%Y-%m-%d} ~ {end_dt:%Y-%m-%d} │ 키워드 {len(keywords)}개")
+st.title("📡 입찰공고 통합 조회  v2.1")
+st.caption(
+    f"{'🧪 테스트 모드 (필터 OFF)' if test_mode else '✅ 실운영 모드 (필터 ON)'} │ "
+    f"{start_dt:%Y-%m-%d} ~ {end_dt:%Y-%m-%d} │ 키워드 {len(keywords)}개 │ "
+    f"지역: 경기도·평택·화성·전국 │ 면허코드: {OUR_LICENSES}"
+)
 
 if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame()
@@ -407,11 +324,11 @@ if "df" not in st.session_state:
 if run:
     all_rows = []
     steps = [
-        ("나라장터",       lambda: fetch_narajangter(keywords, start_dt, end_dt, test_mode)),
-        ("국방부",         lambda: fetch_d2b(keywords, start_dt, end_dt, test_mode)),
-        ("LH",            lambda: fetch_lh(keywords, start_dt, end_dt, test_mode)),
-        ("가스공사",       lambda: fetch_kogas(keywords, start_dt, end_dt)),
-        ("수자원공사",     lambda: fetch_kwater(keywords)),
+        ("나라장터",        lambda: fetch_narajangter(keywords, start_dt, end_dt, test_mode)),
+        ("국방부",          lambda: fetch_d2b(keywords, start_dt, end_dt, test_mode)),
+        ("LH",             lambda: fetch_lh(keywords, start_dt, end_dt, test_mode)),
+        ("가스공사",        lambda: fetch_kogas(keywords, start_dt, end_dt)),
+        ("수자원공사",      lambda: fetch_kwater(keywords)),
     ]
     prog = st.progress(0, text="조회를 시작합니다...")
     for i, (name, fn) in enumerate(steps, 1):
