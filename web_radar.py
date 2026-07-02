@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v2.7"
+VERSION     = "v2.8"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽",
@@ -140,33 +140,51 @@ def fetch_narajangter(keywords, start, end, test_mode):
     if not all_raw: return []
     df_bids = pd.DataFrame(all_raw).drop_duplicates(subset=['bidNtceNo'])
 
+    def call_api(url, params, retries=2):
+        """API 호출 + 실패 시 재시도 (속도 초과 대응)"""
+        for attempt in range(retries):
+            try:
+                res = requests.get(url, params=params, timeout=10)
+                if res.status_code == 200:
+                    return res.json()
+            except: pass
+            import time; time.sleep(0.3 * (attempt + 1))
+        return {}
+
     def fetch_detail(row):
         b_no  = row['bidNtceNo']
         b_ord = str(row.get('bidNtceOrd', '000')).zfill(3)
         bp = {'ServiceKey': service_key, 'type': 'json', 'inqryDiv': '2',
               'bidNtceNo': b_no, 'bidNtceOrd': b_ord}
-        region_val = "확인불가"
+
+        # 지역 조회
+        region_val = "⚠️조회실패"
         try:
-            r_items = requests.get(url_base + 'getBidPblancListInfoPrtcptPsblRgn',
-                params=bp, timeout=8).json().get('response', {}).get('body', {}).get('items', [])
+            r_items = call_api(url_base + 'getBidPblancListInfoPrtcptPsblRgn', bp) \
+                .get('response', {}).get('body', {}).get('items', [])
             regs = [str(ri.get('prtcptPsblRgnNm', '')) for ri in
                     ([r_items] if isinstance(r_items, dict) else r_items)
                     if ri.get('prtcptPsblRgnNm')]
             region_val = ", ".join(set(regs)) if regs else "제한없음"
         except: pass
-        if region_val != "확인불가" and not region_pass(region_val, test_mode): return None
 
-        license_val = "확인불가"
+        # 지역 필터: 조회 성공한 경우만 필터 적용, 실패는 포함하되 표시
+        if "⚠️조회실패" not in region_val and not region_pass(region_val, test_mode):
+            return None
+
+        # 면허 조회
+        license_val = "⚠️조회실패"
         try:
-            l_items = requests.get(url_base + 'getBidPblancListInfoLicenseLimit',
-                params=bp, timeout=8).json().get('response', {}).get('body', {}).get('items', [])
+            l_items = call_api(url_base + 'getBidPblancListInfoLicenseLimit', bp) \
+                .get('response', {}).get('body', {}).get('items', [])
             lics = []
             for li in ([l_items] if isinstance(l_items, dict) else l_items):
                 v = li.get('lcnsLmtNm') or li.get('permsnIndstrytyList', '')
                 if v: lics.append(str(v))
             license_val = " / ".join(set(lics)) if lics else "제한없음"
         except: pass
-        if license_val not in ("확인불가", "제한없음") and not license_code_pass(license_val, test_mode):
+
+        if license_val not in ("⚠️조회실패", "제한없음") and not license_code_pass(license_val, test_mode):
             return None
 
         return to_row(
@@ -180,7 +198,8 @@ def fetch_narajangter(keywords, start, end, test_mode):
         )
 
     results = []
-    with ThreadPoolExecutor(max_workers=20) as ex:
+    # 스레드 8개로 제한 (API 초당 30건 제한 대응)
+    with ThreadPoolExecutor(max_workers=8) as ex:
         for r in as_completed({ex.submit(fetch_detail, row): row
                                 for _, row in df_bids.reset_index(drop=True).iterrows()}):
             try:
@@ -504,11 +523,27 @@ for name, err in errors.items():
 if df.empty:
     st.info("👈 왼쪽에서 조건을 설정하고 **조회 실행**을 눌러주세요.")
 else:
+    fail_mask = df['지역제한'].astype(str).str.contains('⚠️조회실패', na=False)
+    fail_cnt  = fail_mask.sum()
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("총 공고", f"{len(df)}건")
     c2.metric("출처기관", f"{df['출처기관'].nunique()}개")
-    c3.metric("지역 미확인", f"{df['지역제한'].astype(str).str.contains('확인불가').sum()}건")
-    c4.metric("면허 미확인", f"{df['면허정보'].astype(str).str.contains('확인불가|미조회').sum()}건")
+    c3.metric("지역조회 실패", f"{fail_cnt}건",
+              help="API 속도 제한으로 지역 조회에 실패한 공고. 실제 지역 제한이 걸려있을 수 있으니 직접 확인 필요.")
+    c4.metric("면허 미확인",
+              f"{df['면허정보'].astype(str).str.contains('⚠️조회실패|미조회', na=False).sum()}건")
+
+    if fail_cnt > 0:
+        hide_fail = st.checkbox(
+            f"⚠️ 지역조회 실패 {fail_cnt}건 숨기기 (직접 확인 필요한 공고)",
+            value=False,
+            help="나라장터 API 초당 제한으로 지역 조회에 실패했습니다. 충청북도 제천시처럼 "
+                 "우리 지역이 아닌 제한이 걸려있을 수 있으니 체크 후 나라장터에서 직접 확인하세요."
+        )
+        if hide_fail:
+            df = df[~fail_mask]
+            st.caption(f"조회실패 {fail_cnt}건 제외 → {len(df)}건 표시 중")
 
     st.divider()
     st.dataframe(df, use_container_width=True, height=540,
