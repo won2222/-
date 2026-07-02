@@ -16,7 +16,7 @@ import re, io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(
-    page_title="폐기물 입찰 레이더",
+    page_title="SWEEP · 입찰공고 통합 수집",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -47,13 +47,17 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v2.8"
+VERSION     = "v2.9"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재물", "가연성", "낙엽",
                     "식물성", "부유물", "초본류", "초목류", "임목", "폐가구"]
-OUR_LICENSES        = ['1226', '1227', '6786', '6770']
-WASTE_LICENSE_NAMES = ['폐기물처리업', '폐기물수집운반업', '폐기물재활용업']
+# 기본값 - 사이드바에서 사용자가 편집 가능
+DEFAULT_LICENSES     = ['1226', '1227', '6786', '6770']
+DEFAULT_LH_LICENSES  = ['폐기물처리업', '폐기물수집운반업', '폐기물재활용업']
+# 런타임 값 (사이드바에서 덮어씀)
+OUR_LICENSES        = DEFAULT_LICENSES
+WASTE_LICENSE_NAMES = DEFAULT_LH_LICENSES
 KWATER_DETAIL_BASE  = "https://ebid.kwater.or.kr/wq/index.do?w2xPath=/ui/index.xml&view=bidpblanc/bidpblancsttus/BIDBD32000002.xml&tndrPbanno="
 KOGAS_HOME = "https://k-ebid.kogas.or.kr"
 D2B_HOME   = "https://www.d2b.go.kr/"
@@ -422,7 +426,7 @@ def fetch_kwater(keywords):
 # 7. 사이드바
 # =====================================================================
 with st.sidebar:
-    st.markdown(f"## 📡 폐기물 입찰 레이더\n**{VERSION}** · 5개 기관 통합 조회")
+    st.markdown(f"## 🧹 SWEEP\n**{VERSION}** · 5개 기관 입찰공고 통합 수집")
     st.divider()
 
     st.markdown("**📅 검색기간** (나라장터·LH·가스공사)")
@@ -439,6 +443,20 @@ with st.sidebar:
     kw_text  = st.text_area("키워드", value=", ".join(DEFAULT_KEYWORDS),
                              height=90, label_visibility="collapsed")
     keywords = tuple(k.strip() for k in kw_text.split(",") if k.strip())
+
+    st.markdown("**🪪 면허코드** (나라장터·국방부)")
+    lic_text = st.text_area("면허코드",
+                             value=", ".join(DEFAULT_LICENSES),
+                             height=55, label_visibility="collapsed",
+                             help="쉼표로 구분. 예: 1226, 1227, 6786, 6770")
+    OUR_LICENSES = [l.strip() for l in lic_text.split(",") if l.strip()]
+
+    st.markdown("**🪪 LH 면허명** (LH 전용)")
+    lh_lic_text = st.text_area("LH면허명",
+                                value=", ".join(DEFAULT_LH_LICENSES),
+                                height=55, label_visibility="collapsed",
+                                help="쉼표로 구분. LH는 면허명(텍스트)으로 매칭")
+    WASTE_LICENSE_NAMES = [l.strip() for l in lh_lic_text.split(",") if l.strip()]
 
     st.markdown("**🏛️ 출처기관**")
     sources  = st.multiselect("기관",
@@ -461,7 +479,7 @@ with st.sidebar:
 # =====================================================================
 # 8. 메인 화면
 # =====================================================================
-st.title("📡 폐기물 입찰 레이더")
+st.title("🧹 SWEEP — 입찰공고 통합 수집")
 st.caption(
     f"{VERSION} · 나라장터/국방부/LH/가스공사/수자원공사 · "
     f"공고일 {start_dt:%m/%d}~{end_dt:%m/%d} · "
@@ -545,8 +563,18 @@ else:
             df = df[~fail_mask]
             st.caption(f"조회실패 {fail_cnt}건 제외 → {len(df)}건 표시 중")
 
+    # 금액 3자리 콤마 포맷 적용
+    df_display = df.copy()
+    def fmt_amount(v):
+        try:
+            n = int(float(str(v).replace(',', '').replace('원', '').strip()))
+            return f"{n:,}원" if n > 0 else '-'
+        except:
+            return str(v) if v and str(v) not in ('nan', 'None', '-') else '-'
+    df_display['금액(원)'] = df_display['금액(원)'].apply(fmt_amount)
+
     st.divider()
-    st.dataframe(df, use_container_width=True, height=540,
+    st.dataframe(df_display, use_container_width=True, height=540,
         column_config={
             "공고명":   st.column_config.TextColumn("공고명", width="large"),
             "금액(원)": st.column_config.TextColumn("금액(원)"),
