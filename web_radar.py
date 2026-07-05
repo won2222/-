@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v2.9"
+VERSION     = "v3.0"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -110,13 +110,214 @@ def format_d2b_dt(val):
     except: return s
 
 def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
-           amount, region, license_info, keyword, url='', extra=''):
+           amount, region, license_info, keyword, url='', extra='', lwlt_rate='-'):
     return {
         '출처기관': source, '공고번호': notice_no, '공고명': title,
-        '수요/발주기관': agency, '공고일시': notice_dt, '마감일시': close_dt,
-        '개찰일시': open_dt, '금액(원)': amount, '지역제한': region,
-        '면허정보': license_info, '매칭키워드': keyword, '상세URL': url, '비고': extra,
+        '수요/발주기관': agency, '마감일시': close_dt, '금액(원)': amount,
+        '낙찰하한율': lwlt_rate, '지역제한': region,
+        '면허정보': license_info, '상세URL': url,
+        # 내부용 (표시 안 함, 엑셀 다운로드용)
+        '_공고일시': notice_dt, '_개찰일시': open_dt, '_키워드': keyword, '_비고': extra,
     }
+
+
+def make_dajang_excel(sel_df: pd.DataFrame) -> bytes:
+    """
+    선택된 공고를 입찰관리대장(목재총괄) 양식으로 변환
+    - 자동 입력: 공고명, 공고번호, 발주처, 마감일시, 기초금액, 낙찰하한율, URL(비고)
+    - 노란색(수동 입력): 폐기물성상, 현장주소, 물량, 운반거리,
+                         운행회수기준, 운반비1회, 공인계량비단가,
+                         처리비단가, 장비대수량/단가, 계량방법
+    - 수식: 단가, 계약금액, 운행회수, 운반비합계, 공인계량비,
+            처리비, 장비대, 수익, 수익률, 톤당단가
+    ※ 낙찰하한율은 나라장터 공고만 자동 입력(sucsfbidLwltRate/100),
+      그 외 기관은 노란색 수동 입력
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import (PatternFill, Font, Alignment,
+                                  Border, Side, numbers)
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "입찰관리대장"
+
+    # ── 색상 정의 ──
+    YELLOW   = PatternFill("solid", fgColor="FFFF00")   # 수동입력
+    GREEN    = PatternFill("solid", fgColor="E2F0D9")   # 기초금액
+    GRAY     = PatternFill("solid", fgColor="E8E9E7")   # 서브헤더
+    RED_FILL = PatternFill("solid", fgColor="FF0000")   # 계량방법 라벨
+    WHITE    = PatternFill("solid", fgColor="FFFFFF")
+
+    thin  = Side(style='thin')
+    med   = Side(style='medium')
+    def border(l=thin, r=thin, t=thin, b=thin):
+        return Border(left=l, right=r, top=t, bottom=b)
+
+    bold    = Font(bold=True)
+    center  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_al = Alignment(horizontal='left',   vertical='center', wrap_text=True)
+    right_al= Alignment(horizontal='right',  vertical='center')
+
+    # ── 컬럼 폭 설정 (목재총괄 시트 참고) ──
+    col_widths = {
+        'B':4, 'C':22, 'D':18, 'E':16, 'F':16, 'G':8,
+        'H':14, 'I':12, 'J':22, 'K':12, 'L':10,
+        'M':14, 'N':12, 'O':12, 'P':28,
+        'Q':14, 'R':12
+    }
+    for col, w in col_widths.items():
+        ws.column_dimensions[col].width = w
+
+    # ── 타이틀 ──
+    ws.merge_cells('B1:R1')
+    ws['B1'] = '입  찰  관  리  대  장'
+    ws['B1'].font      = Font(bold=True, size=16)
+    ws['B1'].alignment = center
+    ws.row_dimensions[1].height = 30
+
+    # ── 헤더 행 ──
+    headers = [
+        ('B',7,'No'), ('C',7,'공고명'), ('D',7,'공고번호'), ('E',7,'발주처'),
+        ('F',7,'마감일시'), ('G',7,'참가\n신청'), ('H',7,'기초금액\n(원)'),
+        ('I',7,'폐기물\n성상'), ('J',7,'현장주소'), ('K',7,'단가'),
+        ('L',7,'물량\n(톤)'), ('M',7,'계약금액\n(예상)'), ('N',7,'낙찰률\n단가'),
+        ('O',7,'운반거리\n(편도)'), ('P',7,'비고'),
+        ('Q',7,'수익'), ('R',7,'수익률\n(%)'),
+    ]
+    hdr_fill = PatternFill("solid", fgColor="70AD47")
+    for col, row, val in headers:
+        c = ws[f'{col}{row}']
+        c.value     = val
+        c.font      = Font(bold=True, color="FFFFFF")
+        c.fill      = hdr_fill
+        c.alignment = center
+        c.border    = border()
+    ws.row_dimensions[7].height = 30
+
+    # ── 데이터 블록 (공고당 5행) ──
+    START_ROW = 8
+    for idx, (_, row_data) in enumerate(sel_df.iterrows()):
+        r = START_ROW + idx * 5   # 블록 시작 행
+
+        # 값 추출
+        try:
+            amt = int(float(str(row_data.get('금액(원)','0')).replace(',','').replace('원','') or 0))
+        except:
+            amt = 0
+
+        lwlt = row_data.get('낙찰하한율', '-')
+        try:
+            lwlt_val = float(lwlt) if lwlt not in ('-', '', None) else None
+        except:
+            lwlt_val = None
+
+        url_val  = row_data.get('상세URL', '')
+        close_dt = row_data.get('마감일시', '-')
+
+        # 행 높이
+        for ri in range(5):
+            ws.row_dimensions[r + ri].height = 20
+
+        # ── 행 r+0: 메인 정보 ──
+        cells_r0 = {
+            'B': (idx+1, WHITE, False),
+            'C': (row_data.get('공고명','-'),   WHITE, False),
+            'D': (row_data.get('공고번호','-'), WHITE, False),
+            'E': (row_data.get('수요/발주기관','-'), WHITE, False),
+            'F': (close_dt, WHITE, False),
+            'G': ('',  WHITE, True),          # 참가신청 - 수동
+            'H': (amt if amt else '', GREEN, False),  # 기초금액
+            'I': ('',  YELLOW, True),         # 폐기물성상 - 수동
+            'J': ('',  YELLOW, True),         # 현장주소 - 수동
+            'K': (f'=H{r}/L{r}' if amt else '', WHITE, False),   # 단가 수식
+            'L': ('',  YELLOW, True),         # 물량 - 수동
+            'M': (f'=L{r}*N{r}', WHITE, False),  # 계약금액 수식
+            'N': (f'=K{r}*N{r+4}', WHITE, False),  # 낙찰률단가 수식
+            'O': ('',  YELLOW, True),         # 운반거리 - 수동
+            'P': (url_val, WHITE, False),     # URL
+        }
+        for col, (val, fill, is_manual) in cells_r0.items():
+            c = ws[f'{col}{r}']
+            c.value = val; c.fill = fill; c.alignment = left_al; c.border = border()
+
+        # ── 행 r+1: 서브 헤더 ──
+        sub_headers = {
+            'C':'1회운반\n예상수량','D':'운행회수','E':'운반비(1회)','F':'운반비합계',
+            'H':'총 공인\n계량비','I':'처리비','J':'장비대',
+            'M':'부가세','N':'낙찰하한률','P':'톤당단가','Q':'수익','R':'수익률(%)'
+        }
+        for col, val in sub_headers.items():
+            c = ws[f'{col}{r+1}']
+            c.value = val; c.fill = GRAY; c.alignment = center
+            c.font  = Font(size=8); c.border = border()
+
+        # 계량방법 라벨 (빨간 배경)
+        ws[f'O{r+1}'].value = '계량방법'; ws[f'O{r+1}'].fill = RED_FILL
+        ws[f'O{r+1}'].font = Font(color='FFFFFF', size=8)
+        ws[f'O{r+1}'].alignment = center; ws[f'O{r+1}'].border = border()
+
+        # ── 행 r+2: 수량 행 ──
+        ws[f'H{r+2}'].value = f'=D{r+4}'   # 총공인계량비 수량 = 운행회수
+        ws[f'I{r+2}'].value = f'=L{r}'     # 처리비 수량 = 물량
+        ws[f'J{r+2}'].value = 13            # 장비대 수량 (기본값, 수동 가능)
+        for col in ['H','I','J']:
+            ws[f'{col}{r+2}'].fill = GRAY; ws[f'{col}{r+2}'].alignment = right_al
+            ws[f'{col}{r+2}'].border = border()
+        ws[f'J{r+2}'].fill = YELLOW  # 장비대 수량은 수동
+
+        # ── 행 r+3: 단가 행 ──
+        for col in ['H','I','J']:
+            c = ws[f'{col}{r+3}']
+            c.fill = YELLOW; c.alignment = right_al; c.border = border()
+        ws[f'H{r+3}'].value = ''  # 총공인계량비 단가 - 수동
+        ws[f'I{r+3}'].value = ''  # 처리비 단가 - 수동
+        ws[f'J{r+3}'].value = ''  # 장비대 단가 - 수동
+
+        # ── 행 r+4: 계산 행 ──
+        # 운행회수 기준 (수동), 운행회수(수식), 운반비1회(수동), 운반비합계(수식)
+        ws[f'C{r+4}'].value = '';       ws[f'C{r+4}'].fill = YELLOW  # 운행회수 기준 수동
+        ws[f'D{r+4}'].value = f'=L{r}/C{r+4}' if True else ''  # 운행회수 수식
+        ws[f'E{r+4}'].value = '';       ws[f'E{r+4}'].fill = YELLOW  # 운반비1회 수동
+        ws[f'F{r+4}'].value = f'=E{r+4}*D{r+4}'  # 운반비합계 수식
+        ws[f'H{r+4}'].value = f'=H{r+2}*H{r+3}'  # 총공인계량비 수식
+        ws[f'I{r+4}'].value = f'=I{r+2}*I{r+3}'  # 처리비 수식
+        ws[f'J{r+4}'].value = f'=J{r+2}*J{r+3}'  # 장비대 수식
+        ws[f'L{r+4}'].value = '';       ws[f'L{r+4}'].fill = YELLOW  # 기타비용 수동
+        ws[f'M{r+4}'].value = '포함'
+        # 낙찰하한률: 나라장터는 자동, 그 외 노란색
+        if lwlt_val is not None:
+            ws[f'N{r+4}'].value = lwlt_val
+            ws[f'N{r+4}'].number_format = '0.00000'
+        else:
+            ws[f'N{r+4}'].value = ''
+            ws[f'N{r+4}'].fill  = YELLOW  # 수동입력
+        ws[f'O{r+4}'].value = '';       ws[f'O{r+4}'].fill = YELLOW  # 계량방법 수동
+        ws[f'P{r+4}'].value = f'=Q{r+4}/L{r}'   # 톤당단가 수식
+        ws[f'Q{r+4}'].value = f'=M{r}-F{r+4}-H{r+4}-L{r+4}-J{r+4}-I{r+4}'  # 수익 수식
+        ws[f'R{r+4}'].value = f'=Q{r+4}/M{r}*100'  # 수익률 수식
+
+        # 행 r+4 서식
+        for col in ['C','D','E','F','H','I','J','L','M','N','O','P','Q','R']:
+            c = ws[f'{col}{r+4}']
+            if not c.fill or c.fill.fgColor.rgb in ('00000000', 'FFFFFFFF'):
+                c.fill = WHITE
+            c.alignment = right_al; c.border = border()
+            if col in ['Q','R']:
+                c.font = Font(bold=True)
+
+        # 수익/수익률 노란 배경
+        ws[f'Q{r}'].value = '수익';    ws[f'Q{r}'].fill = YELLOW; ws[f'Q{r}'].alignment = center
+        ws[f'R{r}'].value = '수익률(%)'; ws[f'R{r}'].fill = YELLOW; ws[f'R{r}'].alignment = center
+
+        # 구분선 (블록 하단)
+        for col_idx in range(2, 19):   # B~R
+            ws.cell(row=r+4, column=col_idx).border = border(b=med)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 # =====================================================================
 # 2. 나라장터
@@ -200,6 +401,9 @@ def fetch_narajangter(keywords, start, end, test_mode):
             amount=row.get('asignBdgtAmt', row.get('bdgtAmt', '-')),
             region=region_val, license_info=license_val,
             keyword=row.get('_keyword', '-'), url=row.get('bidNtceDtlUrl', '-'),
+            # 낙찰하한율: API가 % 단위(예: 89.745)로 줌 → 소수(0.89745)로 변환
+            lwlt_rate=round(float(row.get('sucsfbidLwltRate', 0) or 0) / 100, 5)
+                      if row.get('sucsfbidLwltRate') else '-',
         )
 
     results = []
@@ -564,30 +768,80 @@ else:
             df = df[~fail_mask]
             st.caption(f"조회실패 {fail_cnt}건 제외 → {len(df)}건 표시 중")
 
-    # 금액 3자리 콤마 포맷 적용
-    df_display = df.copy()
+    # ── 표시용 컬럼 구성 (내부용 _ 컬럼 숨김, 금액 포맷) ──
+    HIDDEN_COLS = ['_공고일시', '_개찰일시', '_키워드', '_비고']
     def fmt_amount(v):
         try:
-            n = int(float(str(v).replace(',', '').replace('원', '').strip()))
+            n = int(float(str(v).replace(',','').replace('원','').strip()))
             return f"{n:,}원" if n > 0 else '-'
         except:
-            return str(v) if v and str(v) not in ('nan', 'None', '-') else '-'
-    df_display['금액(원)'] = df_display['금액(원)'].apply(fmt_amount)
+            return str(v) if v and str(v) not in ('nan','None','-') else '-'
+
+    def fmt_rate(v):
+        try:
+            return f"{float(v)*100:.3f}%" if v not in ('-', None, '') else '-'
+        except:
+            return str(v) if v else '-'
+
+    df_editor = df.copy()
+    df_editor.insert(0, '선택', False)
+    df_editor['금액(원)'] = df_editor['금액(원)'].apply(fmt_amount)
+    df_editor['낙찰하한율'] = df_editor['낙찰하한율'].apply(fmt_rate)
+
+    # 숨김 컬럼 제외
+    display_cols = [c for c in df_editor.columns if c not in HIDDEN_COLS]
+    df_editor = df_editor[display_cols]
 
     st.divider()
-    st.dataframe(df_display, use_container_width=True, height=540,
+    st.caption("💡 투찰할 공고를 **선택** 후 입찰관리대장으로 다운로드하세요.")
+
+    edited = st.data_editor(
+        df_editor,
+        use_container_width=True,
+        height=540,
         column_config={
+            "선택":     st.column_config.CheckboxColumn("선택", width="small"),
             "공고명":   st.column_config.TextColumn("공고명", width="large"),
             "금액(원)": st.column_config.TextColumn("금액(원)"),
             "면허정보": st.column_config.TextColumn("면허정보", width="medium"),
             "상세URL":  st.column_config.LinkColumn("상세URL", display_text="열기"),
-        })
+        },
+        disabled=[c for c in display_cols if c != '선택'],
+        hide_index=True,
+    )
 
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='통합결과', index=False)
-        for src in df['출처기관'].unique():
-            df[df['출처기관'] == src].to_excel(writer, sheet_name=str(src)[:31], index=False)
-    st.download_button("📥 엑셀 다운로드", data=buf.getvalue(),
-        file_name=f"입찰레이더_{TODAY:%Y%m%d_%H%M}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    selected = edited[edited['선택'] == True]
+    n_sel = len(selected)
+
+    col_dl1, col_dl2 = st.columns([1, 1])
+
+    # ── 버튼 1: 전체 결과 엑셀 ──
+    with col_dl1:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            df.to_excel(writer, sheet_name='통합결과', index=False)
+            for src in df['출처기관'].unique():
+                df[df['출처기관']==src].to_excel(writer, sheet_name=str(src)[:31], index=False)
+        st.download_button("📥 전체 결과 엑셀", data=buf.getvalue(),
+            file_name=f"SWEEP_{TODAY:%Y%m%d_%H%M}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True)
+
+    # ── 버튼 2: 선택 공고 입찰관리대장 ──
+    with col_dl2:
+        if n_sel == 0:
+            st.button(f"📋 입찰관리대장 다운로드 (0건 선택됨)",
+                      disabled=True, use_container_width=True)
+        else:
+            # 선택된 공고번호로 원본 df에서 데이터 가져오기
+            sel_nos = selected['공고번호'].tolist()
+            sel_df  = df[df['공고번호'].isin(sel_nos)].reset_index(drop=True)
+            dajang_buf = make_dajang_excel(sel_df)
+            st.download_button(
+                f"📋 입찰관리대장 ({n_sel}건 선택)",
+                data=dajang_buf,
+                file_name=f"입찰관리대장_{TODAY:%Y%m%d_%H%M}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
