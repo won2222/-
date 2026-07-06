@@ -220,13 +220,9 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
 
         clos   = str(row.get("마감일시","-"))
         bid_no = str(row.get("공고번호",""))
-        # ★ URL: bidNtceNo 기반 직접 조립
+        # URL: fetch 단계에서 이미 올바른 패턴으로 조립됨
         api_url = row.get("상세URL","")
-        if bid_no and bid_no != "-":
-            direct_url = (f"https://www.g2b.go.kr/link/PNPE027_01/single/"
-                          f"?bidPbancNo={bid_no}&bidPbancOrd=000")
-        else:
-            direct_url = api_url if api_url else ""
+        direct_url = api_url if api_url and api_url not in ("-","") else ""
 
         ws.row_dimensions[r  ].height = 48
         ws.row_dimensions[r+1].height = 22
@@ -428,7 +424,11 @@ def fetch_narajangter(keywords, start, end, test_mode):
             close_dt=row.get('bidClseDt', '-'), open_dt=row.get('opengDt', '-'),
             amount=row.get('asignBdgtAmt', row.get('bdgtAmt', '-')),
             region=region_val, license_info=license_val,
-            keyword=row.get('_keyword', '-'), url=row.get('bidNtceDtlUrl', '-'),
+            keyword=row.get('_keyword', '-'),
+            # ★ 확인된 URL 패턴으로 직접 조립 (PNPE027_01 고정값 확인됨)
+            url=(f"https://www.g2b.go.kr/link/PNPE027_01/single/"
+                 f"?bidPbancNo={b_no}"
+                 f"&bidPbancOrd={str(row.get('bidNtceOrd','000')).zfill(3)}"),
             # 낙찰하한율: API가 % 단위(예: 89.745)로 줌 → 소수(0.89745)로 변환
             lwlt_rate=round(float(row.get('sucsfbidLwltRate', 0) or 0) / 100, 5)
                       if row.get('sucsfbidLwltRate') else '-',
