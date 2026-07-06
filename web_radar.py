@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v3.0"
+VERSION     = "v3.3"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -121,207 +121,235 @@ def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
     }
 
 
-def make_dajang_excel(sel_df: pd.DataFrame) -> bytes:
+def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
     """
-    선택된 공고를 입찰관리대장(목재총괄) 양식으로 변환
-    - 자동 입력: 공고명, 공고번호, 발주처, 마감일시, 기초금액, 낙찰하한율, URL(비고)
-    - 노란색(수동 입력): 폐기물성상, 현장주소, 물량, 운반거리,
-                         운행회수기준, 운반비1회, 공인계량비단가,
-                         처리비단가, 장비대수량/단가, 계량방법
-    - 수식: 단가, 계약금액, 운행회수, 운반비합계, 공인계량비,
-            처리비, 장비대, 수익, 수익률, 톤당단가
-    ※ 낙찰하한율은 나라장터 공고만 자동 입력(sucsfbidLwltRate/100),
-      그 외 기관은 노란색 수동 입력
+    입찰관리대장 양식 생성 - v3.3
+    수정:
+    - 눈금선 제거
+    - L열 숨기기(기타비용 제거), 수익공식에서 L 제거
+    - P,Q,R 셀 2행 merge (비고/수익/수익률)
+    - B열 열고정 제거 (행만 고정)
+    - No 블록별 굵은 외곽 테두리
+    - URL: bidNtceNo 기반 직접 조립
     """
     from openpyxl import Workbook
-    from openpyxl.styles import (PatternFill, Font, Alignment,
-                                  Border, Side, numbers)
-    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
     wb = Workbook()
     ws = wb.active
     ws.title = "입찰관리대장"
 
-    # ── 색상 정의 ──
-    YELLOW   = PatternFill("solid", fgColor="FFFF00")   # 수동입력
-    GREEN    = PatternFill("solid", fgColor="E2F0D9")   # 기초금액
-    GRAY     = PatternFill("solid", fgColor="E8E9E7")   # 서브헤더
-    RED_FILL = PatternFill("solid", fgColor="FF0000")   # 계량방법 라벨
-    WHITE    = PatternFill("solid", fgColor="FFFFFF")
+    # ── 눈금선 제거 ──
+    ws.sheet_view.showGridLines = False
 
-    thin  = Side(style='thin')
-    med   = Side(style='medium')
-    def border(l=thin, r=thin, t=thin, b=thin):
-        return Border(left=l, right=r, top=t, bottom=b)
+    YELLOW  = PatternFill("solid", fgColor="FFFF00")
+    GREEN_H = PatternFill("solid", fgColor="70AD47")
+    GREEN_L = PatternFill("solid", fgColor="E2F0D9")
+    GRAY    = PatternFill("solid", fgColor="D9D9D9")
+    RED_F   = PatternFill("solid", fgColor="FF0000")
+    WHITE   = PatternFill("solid", fgColor="FFFFFF")
 
-    bold    = Font(bold=True)
-    center  = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    left_al = Alignment(horizontal='left',   vertical='center', wrap_text=True)
-    right_al= Alignment(horizontal='right',  vertical='center')
+    thin  = Side(style="thin")
+    med   = Side(style="medium")
+    thick = Side(style="medium")
 
-    # ── 컬럼 폭 설정 (목재총괄 시트 참고) ──
-    col_widths = {
-        'B':4, 'C':22, 'D':18, 'E':16, 'F':16, 'G':8,
-        'H':14, 'I':12, 'J':22, 'K':12, 'L':10,
-        'M':14, 'N':12, 'O':12, 'P':28,
-        'Q':14, 'R':12
-    }
-    for col, w in col_widths.items():
+    def bd_thin(): return Border(left=thin, right=thin, top=thin, bottom=thin)
+    def bd_thick(l=True, r=True, t=True, b=True):
+        return Border(
+            left   = med if l else thin,
+            right  = med if r else thin,
+            top    = med if t else thin,
+            bottom = med if b else thin,
+        )
+
+    ctr = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    lft = Alignment(horizontal="left",   vertical="center", wrap_text=True)
+    rgt = Alignment(horizontal="right",  vertical="center")
+
+    # ── 열 너비 (L열 숨기기) ──
+    for col, w in {
+        "B":4, "C":20, "D":15, "E":14, "F":16,
+        "G":14, "H":10, "I":16, "J":11, "K":10,
+        "M":13, "N":11, "O":11, "P":18, "Q":13, "R":10
+    }.items():
         ws.column_dimensions[col].width = w
+    ws.column_dimensions["L"].hidden = True   # L열 숨기기
 
-    # ── 타이틀 ──
-    ws.merge_cells('B1:R1')
-    ws['B1'] = '입  찰  관  리  대  장'
-    ws['B1'].font      = Font(bold=True, size=16)
-    ws['B1'].alignment = center
-    ws.row_dimensions[1].height = 30
+    # ── 타이틀 (1행) ──
+    ws.merge_cells("B1:R1")
+    c = ws["B1"]
+    c.value = "입  찰  관  리  대  장"
+    c.font  = Font(bold=True, size=16); c.alignment = ctr
+    ws.row_dimensions[1].height = 35
+    for i in range(2, 7): ws.row_dimensions[i].height = 4
 
-    # ── 헤더 행 ──
-    headers = [
-        ('B',7,'No'), ('C',7,'공고명'), ('D',7,'공고번호'), ('E',7,'발주처'),
-        ('F',7,'마감일시'), ('G',7,'참가\n신청'), ('H',7,'기초금액\n(원)'),
-        ('I',7,'폐기물\n성상'), ('J',7,'현장주소'), ('K',7,'단가'),
-        ('L',7,'물량\n(톤)'), ('M',7,'계약금액\n(예상)'), ('N',7,'낙찰률\n단가'),
-        ('O',7,'운반거리\n(편도)'), ('P',7,'비고'),
-        ('Q',7,'수익'), ('R',7,'수익률\n(%)'),
+    # ── 헤더 (7행) ──
+    HDR = 7
+    hdr_items = [
+        ("B","No"),("C","공고명"),("D","공고번호"),("E","발주처"),
+        ("F","마감일시"),("G","기초금액\n(원)"),("H","폐기물\n성상"),
+        ("I","현장주소"),("J","단가"),("K","물량\n(톤)"),
+        ("M","계약금액\n(예상)"),("N","낙찰률\n단가"),
+        ("O","운반거리\n(편도)"),("P","비고"),("Q","수익"),("R","수익률\n(%)"),
     ]
-    hdr_fill = PatternFill("solid", fgColor="70AD47")
-    for col, row, val in headers:
-        c = ws[f'{col}{row}']
-        c.value     = val
-        c.font      = Font(bold=True, color="FFFFFF")
-        c.fill      = hdr_fill
-        c.alignment = center
-        c.border    = border()
-    ws.row_dimensions[7].height = 30
+    for col, val in hdr_items:
+        c = ws[f"{col}{HDR}"]
+        c.value = val; c.font = Font(bold=True, color="FFFFFF")
+        c.fill = GREEN_H; c.alignment = ctr; c.border = bd_thin()
+    ws.row_dimensions[HDR].height = 30
 
-    # ── 데이터 블록 (공고당 5행) ──
-    START_ROW = 8
-    for idx, (_, row_data) in enumerate(sel_df.iterrows()):
-        r = START_ROW + idx * 5   # 블록 시작 행
+    # ── Freeze: 행만 고정 (B열 열고정 제거) ──
+    ws.freeze_panes = f"A{HDR+1}"
 
-        # 값 추출
+    # ── 데이터 블록 (3행) ──
+    SR    = HDR + 1
+    BLOCK = 3
+    COL_RANGE = range(2, 19)   # B(2)~R(18)
+
+    for idx, (_, row) in enumerate(sel_df.iterrows()):
+        r = SR + idx * BLOCK
+
         try:
-            amt = int(float(str(row_data.get('금액(원)','0')).replace(',','').replace('원','') or 0))
-        except:
-            amt = 0
+            amt = int(float(str(row.get("금액(원)","0")).replace(",","").replace("원","").strip() or 0))
+        except: amt = 0
 
-        lwlt = row_data.get('낙찰하한율', '-')
+        lwlt = row.get("낙찰하한율", "-")
         try:
-            lwlt_val = float(lwlt) if lwlt not in ('-', '', None) else None
-        except:
-            lwlt_val = None
+            lwlt_f = float(lwlt) if str(lwlt) not in ("-","","None") else None
+        except: lwlt_f = None
 
-        url_val  = row_data.get('상세URL', '')
-        close_dt = row_data.get('마감일시', '-')
-
-        # 행 높이
-        for ri in range(5):
-            ws.row_dimensions[r + ri].height = 20
-
-        # ── 행 r+0: 메인 정보 ──
-        cells_r0 = {
-            'B': (idx+1, WHITE, False),
-            'C': (row_data.get('공고명','-'),   WHITE, False),
-            'D': (row_data.get('공고번호','-'), WHITE, False),
-            'E': (row_data.get('수요/발주기관','-'), WHITE, False),
-            'F': (close_dt, WHITE, False),
-            'G': ('',  WHITE, True),          # 참가신청 - 수동
-            'H': (amt if amt else '', GREEN, False),  # 기초금액
-            'I': ('',  YELLOW, True),         # 폐기물성상 - 수동
-            'J': ('',  YELLOW, True),         # 현장주소 - 수동
-            'K': (f'=H{r}/L{r}' if amt else '', WHITE, False),   # 단가 수식
-            'L': ('',  YELLOW, True),         # 물량 - 수동
-            'M': (f'=L{r}*N{r}', WHITE, False),  # 계약금액 수식
-            'N': (f'=K{r}*N{r+4}', WHITE, False),  # 낙찰률단가 수식
-            'O': ('',  YELLOW, True),         # 운반거리 - 수동
-            'P': (url_val, WHITE, False),     # URL
-        }
-        for col, (val, fill, is_manual) in cells_r0.items():
-            c = ws[f'{col}{r}']
-            c.value = val; c.fill = fill; c.alignment = left_al; c.border = border()
-
-        # ── 행 r+1: 서브 헤더 ──
-        sub_headers = {
-            'C':'1회운반\n예상수량','D':'운행회수','E':'운반비(1회)','F':'운반비합계',
-            'H':'총 공인\n계량비','I':'처리비','J':'장비대',
-            'M':'부가세','N':'낙찰하한률','P':'톤당단가','Q':'수익','R':'수익률(%)'
-        }
-        for col, val in sub_headers.items():
-            c = ws[f'{col}{r+1}']
-            c.value = val; c.fill = GRAY; c.alignment = center
-            c.font  = Font(size=8); c.border = border()
-
-        # 계량방법 라벨 (빨간 배경)
-        ws[f'O{r+1}'].value = '계량방법'; ws[f'O{r+1}'].fill = RED_FILL
-        ws[f'O{r+1}'].font = Font(color='FFFFFF', size=8)
-        ws[f'O{r+1}'].alignment = center; ws[f'O{r+1}'].border = border()
-
-        # ── 행 r+2: 수량 행 ──
-        ws[f'H{r+2}'].value = f'=D{r+4}'   # 총공인계량비 수량 = 운행회수
-        ws[f'I{r+2}'].value = f'=L{r}'     # 처리비 수량 = 물량
-        ws[f'J{r+2}'].value = 13            # 장비대 수량 (기본값, 수동 가능)
-        for col in ['H','I','J']:
-            ws[f'{col}{r+2}'].fill = GRAY; ws[f'{col}{r+2}'].alignment = right_al
-            ws[f'{col}{r+2}'].border = border()
-        ws[f'J{r+2}'].fill = YELLOW  # 장비대 수량은 수동
-
-        # ── 행 r+3: 단가 행 ──
-        for col in ['H','I','J']:
-            c = ws[f'{col}{r+3}']
-            c.fill = YELLOW; c.alignment = right_al; c.border = border()
-        ws[f'H{r+3}'].value = ''  # 총공인계량비 단가 - 수동
-        ws[f'I{r+3}'].value = ''  # 처리비 단가 - 수동
-        ws[f'J{r+3}'].value = ''  # 장비대 단가 - 수동
-
-        # ── 행 r+4: 계산 행 ──
-        # 운행회수 기준 (수동), 운행회수(수식), 운반비1회(수동), 운반비합계(수식)
-        ws[f'C{r+4}'].value = '';       ws[f'C{r+4}'].fill = YELLOW  # 운행회수 기준 수동
-        ws[f'D{r+4}'].value = f'=L{r}/C{r+4}' if True else ''  # 운행회수 수식
-        ws[f'E{r+4}'].value = '';       ws[f'E{r+4}'].fill = YELLOW  # 운반비1회 수동
-        ws[f'F{r+4}'].value = f'=E{r+4}*D{r+4}'  # 운반비합계 수식
-        ws[f'H{r+4}'].value = f'=H{r+2}*H{r+3}'  # 총공인계량비 수식
-        ws[f'I{r+4}'].value = f'=I{r+2}*I{r+3}'  # 처리비 수식
-        ws[f'J{r+4}'].value = f'=J{r+2}*J{r+3}'  # 장비대 수식
-        ws[f'L{r+4}'].value = '';       ws[f'L{r+4}'].fill = YELLOW  # 기타비용 수동
-        ws[f'M{r+4}'].value = '포함'
-        # 낙찰하한률: 나라장터는 자동, 그 외 노란색
-        if lwlt_val is not None:
-            ws[f'N{r+4}'].value = lwlt_val
-            ws[f'N{r+4}'].number_format = '0.00000'
+        clos   = str(row.get("마감일시","-"))
+        bid_no = str(row.get("공고번호",""))
+        # ★ URL: bidNtceNo 기반 직접 조립
+        api_url = row.get("상세URL","")
+        if bid_no and bid_no != "-":
+            direct_url = (f"https://www.g2b.go.kr/link/PNPE027_01/single/"
+                          f"?bidPbancNo={bid_no}&bidPbancOrd=000")
         else:
-            ws[f'N{r+4}'].value = ''
-            ws[f'N{r+4}'].fill  = YELLOW  # 수동입력
-        ws[f'O{r+4}'].value = '';       ws[f'O{r+4}'].fill = YELLOW  # 계량방법 수동
-        ws[f'P{r+4}'].value = f'=Q{r+4}/L{r}'   # 톤당단가 수식
-        ws[f'Q{r+4}'].value = f'=M{r}-F{r+4}-H{r+4}-L{r+4}-J{r+4}-I{r+4}'  # 수익 수식
-        ws[f'R{r+4}'].value = f'=Q{r+4}/M{r}*100'  # 수익률 수식
+            direct_url = api_url if api_url else ""
 
-        # 행 r+4 서식
-        for col in ['C','D','E','F','H','I','J','L','M','N','O','P','Q','R']:
-            c = ws[f'{col}{r+4}']
-            if not c.fill or c.fill.fgColor.rgb in ('00000000', 'FFFFFFFF'):
-                c.fill = WHITE
-            c.alignment = right_al; c.border = border()
-            if col in ['Q','R']:
-                c.font = Font(bold=True)
+        ws.row_dimensions[r  ].height = 48
+        ws.row_dimensions[r+1].height = 22
+        ws.row_dimensions[r+2].height = 25
 
-        # 수익/수익률 노란 배경
-        ws[f'Q{r}'].value = '수익';    ws[f'Q{r}'].fill = YELLOW; ws[f'Q{r}'].alignment = center
-        ws[f'R{r}'].value = '수익률(%)'; ws[f'R{r}'].fill = YELLOW; ws[f'R{r}'].alignment = center
+        # ── No 셀: B열 3행 merge ──
+        ws.merge_cells(f"B{r}:B{r+2}")
+        c = ws[f"B{r}"]
+        c.value = idx+1; c.font = Font(bold=True, size=12); c.alignment = ctr
+        c.fill  = WHITE
 
-        # 구분선 (블록 하단)
-        for col_idx in range(2, 19):   # B~R
-            ws.cell(row=r+4, column=col_idx).border = border(b=med)
+        # ── r+0: 메인 행 ──────────────────────────────────────────
+        def sm(col, val=None, fill=None, fmt=None, al=None):
+            c = ws[f"{col}{r}"]
+            if val  is not None: c.value = val
+            if fill is not None: c.fill  = fill
+            if fmt  is not None: c.number_format = fmt
+            c.alignment = al or ctr; c.border = bd_thin()
+
+        sm("C", row.get("공고명","-"), al=lft)
+        sm("D", bid_no)
+        sm("E", row.get("수요/발주기관","-"))
+        sm("F", clos)
+        sm("G", amt if amt else "", GREEN_L, "#,##0")
+        sm("H", fill=YELLOW)
+        sm("I", fill=YELLOW)
+        sm("J", f"=IFERROR(G{r}/K{r},0)" if amt else "", fmt="#,##0")
+        sm("K", fill=YELLOW)
+        sm("M", f"=IFERROR(K{r}*N{r},0)", fmt="#,##0")
+        sm("N", f"=IFERROR(J{r}*N{r+2},0)", fmt="#,##0")
+        sm("O", fill=YELLOW)
+
+        # ── P,Q,R: 2행 merge (r+0 ~ r+1) ──────────────────────
+        for col in ["P","Q","R"]:
+            ws.merge_cells(f"{col}{r}:{col}{r+1}")
+
+        # 비고: 하이퍼링크
+        c = ws[f"P{r}"]
+        c.value = "공고 바로가기" if direct_url else ""
+        if direct_url:
+            c.hyperlink = direct_url
+            c.font = Font(color="0563C1", underline="single")
+        c.alignment = ctr; c.border = bd_thin()
+
+        # 수익: r+2 값을 참조 (merge된 셀에 수식)
+        ws[f"Q{r}"].value = f"=IFERROR(M{r}-F{r+2}-G{r+2}-I{r+2}-H{r+2},\"\")"
+        ws[f"Q{r}"].number_format = "#,##0"
+        ws[f"Q{r}"].font = Font(bold=True); ws[f"Q{r}"].alignment = rgt
+        ws[f"Q{r}"].border = bd_thin()
+
+        ws[f"R{r}"].value = f"=IFERROR(Q{r}/M{r}*100,\"\")"
+        ws[f"R{r}"].number_format = "0.00"
+        ws[f"R{r}"].font = Font(bold=True); ws[f"R{r}"].alignment = rgt
+        ws[f"R{r}"].border = bd_thin()
+
+        # ── r+1: 서브헤더 (회색) - P,Q,R 이미 merge됨 ──────────
+        sub = {
+            "C":"1회운반\n예상수량","D":"운행회수","E":"운반비(1회)",
+            "F":"운반비합계","G":"총 공인\n계량비","H":"처리비",
+            "I":"장비대","M":"부가세","N":"낙찰하한률","P":"톤당단가",
+        }
+        for col in "CDEFGHIJKMN":
+            c = ws[f"{col}{r+1}"]
+            c.fill = GRAY; c.font = Font(size=8)
+            c.border = bd_thin(); c.alignment = ctr
+            if col in sub: c.value = sub[col]
+
+        ws[f"O{r+1}"].value = "계량방법"; ws[f"O{r+1}"].fill = RED_F
+        ws[f"O{r+1}"].font = Font(color="FFFFFF", size=8)
+        ws[f"O{r+1}"].alignment = ctr; ws[f"O{r+1}"].border = bd_thin()
+
+        # ── r+2: 계산 행 ─────────────────────────────────────────
+        def cc(col, val=None, fill=None, fmt=None):
+            c = ws[f"{col}{r+2}"]
+            if val  is not None: c.value = val
+            if fill is not None: c.fill  = fill
+            if fmt  is not None: c.number_format = fmt
+            c.alignment = rgt; c.border = bd_thin()
+            if not c.fill or c.fill.fgColor.rgb == "00000000": c.fill = WHITE
+
+        cc("C", fill=YELLOW)
+        cc("D", f"=IFERROR(K{r}/C{r+2},0)", fmt="0.0")
+        cc("E", fill=YELLOW)
+        cc("F", f"=IFERROR(E{r+2}*D{r+2},0)", fmt="#,##0")
+        cc("G", f"=IFERROR(D{r+2}*10000,0)", fmt="#,##0")
+        cc("H", fill=YELLOW)   # 처리비 직접입력
+        cc("I", fill=YELLOW)   # 장비대 직접입력
+        # L 제거됨
+        ws[f"M{r+2}"].value = "포함"; ws[f"M{r+2}"].alignment = ctr
+        ws[f"M{r+2}"].fill = WHITE; ws[f"M{r+2}"].border = bd_thin()
+
+        if lwlt_f is not None:
+            cc("N", lwlt_f, fmt="0.00000")
+        else:
+            cc("N", fill=YELLOW)
+
+        cc("O", fill=YELLOW)   # 계량방법 수동
+        cc("P", f"=IFERROR(Q{r}/K{r},0)", fmt="#,##0")   # 톤당단가
+        # Q, R는 r+0에 merge됨, r+2는 빈셀
+        for col in "QR":
+            ws[f"{col}{r+2}"].fill = WHITE; ws[f"{col}{r+2}"].border = bd_thin()
+
+        # ── 블록 외곽 굵은 테두리 (image 4) ──────────────────────
+        for ri in range(r, r+3):
+            for ci in COL_RANGE:
+                c = ws.cell(row=ri, column=ci)
+                existing = c.border
+                is_left   = (ci == 2)
+                is_right  = (ci == 18)
+                is_top    = (ri == r)
+                is_bottom = (ri == r+2)
+                c.border = Border(
+                    left   = med   if is_left   else (existing.left   or thin),
+                    right  = med   if is_right  else (existing.right  or thin),
+                    top    = med   if is_top    else (existing.top    or thin),
+                    bottom = med   if is_bottom else (existing.bottom or thin),
+                )
 
     buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
+    wb.save(buf); buf.seek(0)
     return buf.read()
 
-# =====================================================================
-# 2. 나라장터
-# =====================================================================
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_narajangter(keywords, start, end, test_mode):
     service_key = unquote(SERVICE_KEY)
