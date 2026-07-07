@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v3.9.2"
+VERSION     = "v3.9.3"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -536,7 +536,7 @@ def fetch_narajangter(keywords, start, end, test_mode):
 
         # 낙찰방법 필터: 수의시담 제외 (테스트모드에서는 통과)
         sucsfbid_nm = str(row.get('sucsfbidMthdNm', '') or '')
-        if not test_mode and '수의시담' in sucsfbid_nm:
+        if not test_mode and ('수의시담' in sucsfbid_nm or '협상에의한계약' in sucsfbid_nm):
             return None
 
         return to_row(
