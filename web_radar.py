@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v3.3"
+VERSION     = "v3.9"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -228,8 +228,7 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         ws.row_dimensions[r+1].height = 22
         ws.row_dimensions[r+2].height = 25
 
-        # ── No 셀: B열 3행 merge ──
-        ws.merge_cells(f"B{r}:B{r+2}")
+        # No 셀 (merge는 나중에 일괄 처리)
         c = ws[f"B{r}"]
         c.value = idx+1; c.font = Font(bold=True, size=12); c.alignment = ctr
         c.fill  = WHITE
@@ -251,13 +250,12 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         sm("I", fill=YELLOW)
         sm("J", f"=IFERROR(G{r}/K{r},0)" if amt else "", fmt="#,##0")
         sm("K", fill=YELLOW)
-        sm("M", f"=IFERROR(K{r}*N{r},0)", fmt="#,##0")
+        sm("M", f"=IFERROR(G{r}*N{r+2},0)", fmt="#,##0")   # 기초금액×낙찰하한률
         sm("N", f"=IFERROR(J{r}*N{r+2},0)", fmt="#,##0")
         sm("O", fill=YELLOW)
 
         # ── P,Q,R: 2행 merge (r+0 ~ r+1) ──────────────────────
-        for col in ["P","Q","R"]:
-            ws.merge_cells(f"{col}{r}:{col}{r+1}")
+        # P,Q,R: merge는 나중에 일괄 처리 (border 먼저)
 
         # 비고: 하이퍼링크
         c = ws[f"P{r}"]
@@ -265,30 +263,36 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         if direct_url:
             c.hyperlink = direct_url
             c.font = Font(color="0563C1", underline="single")
-        c.alignment = ctr; c.border = bd_thin()
+        c.alignment = ctr
 
         # 수익: r+2 값을 참조 (merge된 셀에 수식)
         ws[f"Q{r}"].value = f"=IFERROR(M{r}-F{r+2}-G{r+2}-I{r+2}-H{r+2},\"\")"
         ws[f"Q{r}"].number_format = "#,##0"
         ws[f"Q{r}"].font = Font(bold=True); ws[f"Q{r}"].alignment = rgt
-        ws[f"Q{r}"].border = bd_thin()
 
         ws[f"R{r}"].value = f"=IFERROR(Q{r}/M{r}*100,\"\")"
         ws[f"R{r}"].number_format = "0.00"
         ws[f"R{r}"].font = Font(bold=True); ws[f"R{r}"].alignment = rgt
-        ws[f"R{r}"].border = bd_thin()
 
         # ── r+1: 서브헤더 (회색) - P,Q,R 이미 merge됨 ──────────
         sub = {
             "C":"1회운반\n예상수량","D":"운행회수","E":"운반비(1회)",
             "F":"운반비합계","G":"총 공인\n계량비","H":"처리비",
-            "I":"장비대","M":"부가세","N":"낙찰하한률","P":"톤당단가",
+            "I":"장비대","M":"부가세","N":"낙찰하한률",# P는 merge phantom — "P":"톤당단가",
         }
         for col in "CDEFGHIJKMN":
             c = ws[f"{col}{r+1}"]
             c.fill = GRAY; c.font = Font(size=8)
             c.border = bd_thin(); c.alignment = ctr
             if col in sub: c.value = sub[col]
+
+        # J, K 서브헤더: calc label 없는 열 → 대각선 border (N/A 표시)
+        for col in ["J", "K"]:
+            c = ws[f"{col}{r+1}"]
+            c.fill = GRAY; c.border = Border(
+                left=thin, right=thin, top=thin, bottom=thin,
+                diagonal=thin, diagonalDown=True
+            )
 
         ws[f"O{r+1}"].value = "계량방법"; ws[f"O{r+1}"].fill = RED_F
         ws[f"O{r+1}"].font = Font(color="FFFFFF", size=8)
@@ -304,7 +308,7 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
             if not c.fill or c.fill.fgColor.rgb == "00000000": c.fill = WHITE
 
         cc("C", fill=YELLOW)
-        cc("D", f"=IFERROR(K{r}/C{r+2},0)", fmt="0.0")
+        cc("D", f"=IFERROR(K{r}/C{r+2},0)", fmt="#,##0")   # 소수점 제거
         cc("E", fill=YELLOW)
         cc("F", f"=IFERROR(E{r+2}*D{r+2},0)", fmt="#,##0")
         cc("G", f"=IFERROR(D{r+2}*10000,0)", fmt="#,##0")
@@ -320,26 +324,139 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
             cc("N", fill=YELLOW)
 
         cc("O", fill=YELLOW)   # 계량방법 수동
-        cc("P", f"=IFERROR(Q{r}/K{r},0)", fmt="#,##0")   # 톤당단가
-        # Q, R는 r+0에 merge됨, r+2는 빈셀
-        for col in "QR":
-            ws[f"{col}{r+2}"].fill = WHITE; ws[f"{col}{r+2}"].border = bd_thin()
+        # P{r+2}는 merge phantom → 톤당단가 제거
+        # Q, R: 3행 merge phantom → 건드리지 않음
 
-        # ── 블록 외곽 굵은 테두리 (image 4) ──────────────────────
-        for ri in range(r, r+3):
+        # ── (블록별 medium border는 모든 블록 생성 후 일괄 적용) ──
+
+    # ═══════════════════════════════════════════════════════
+    # PASS 1: 전체 데이터 영역에 thin border 일괄 적용
+    # ═══════════════════════════════════════════════════════
+    from openpyxl.utils import get_column_letter
+    n_blocks  = len(sel_df)
+    last_row  = SR + n_blocks * BLOCK - 1  # 마지막 데이터 행
+    all_merges = {str(m) for m in ws.merged_cells.ranges}
+
+    def is_phantom(row, col):
+        """해당 셀이 merge의 phantom(non-top-left)인지 확인"""
+        col_letter = get_column_letter(col)
+        for m_str in all_merges:
+            # B8:B10 형식 파싱
+            try:
+                from openpyxl.utils import range_boundaries
+                min_col, min_row, max_col, max_row = range_boundaries(m_str)
+                if min_row <= row <= max_row and min_col <= col <= max_col:
+                    if row != min_row or col != min_col:  # top-left가 아니면 phantom
+                        return True
+            except Exception:
+                pass
+        return False
+
+    for ri in range(SR, last_row + 1):
+        for ci in COL_RANGE:
+            if is_phantom(ri, ci):
+                continue
+            c = ws.cell(row=ri, column=ci)
+            # 대각선 속성 보존
+            diag    = c.border.diagonal     if c.border else None
+            diag_dn = c.border.diagonalDown if c.border else False
+            c.border = Border(
+                left=thin, right=thin, top=thin, bottom=thin,
+                diagonal=diag, diagonalDown=diag_dn,
+            )
+
+    # ═══════════════════════════════════════════════════════
+    # PASS 2: No 블록별 외곽에 medium border 덮어씌우기
+    # ═══════════════════════════════════════════════════════
+    for idx in range(n_blocks):
+        r = SR + idx * BLOCK
+        r_end = r + BLOCK - 1  # = r+2
+
+        for ri in range(r, r_end + 1):
             for ci in COL_RANGE:
-                c = ws.cell(row=ri, column=ci)
-                existing = c.border
-                is_left   = (ci == 2)
-                is_right  = (ci == 18)
-                is_top    = (ri == r)
-                is_bottom = (ri == r+2)
+                if is_phantom(ri, ci):
+                    continue
+                c   = ws.cell(row=ri, column=ci)
+                diag    = c.border.diagonal     if c.border else None
+                diag_dn = c.border.diagonalDown if c.border else False
                 c.border = Border(
-                    left   = med   if is_left   else (existing.left   or thin),
-                    right  = med   if is_right  else (existing.right  or thin),
-                    top    = med   if is_top    else (existing.top    or thin),
-                    bottom = med   if is_bottom else (existing.bottom or thin),
+                    left   = med if ci == COL_RANGE.start          else c.border.left,
+                    right  = med if ci == COL_RANGE.stop - 1       else c.border.right,
+                    top    = med if ri == r                         else c.border.top,
+                    bottom = med if ri == r_end                     else c.border.bottom,
+                    diagonal=diag, diagonalDown=diag_dn,
                 )
+
+        # merge top-left 셀들 외곽 medium border 명시 재설정
+        ws[f"B{r}"].border = Border(left=med, right=thin, top=med, bottom=med)
+        ws[f"P{r}"].border = Border(left=thin, right=thin, top=med, bottom=med)
+        ws[f"Q{r}"].border = Border(left=thin, right=thin, top=med, bottom=med)
+        ws[f"R{r}"].border = Border(left=thin, right=med,  top=med, bottom=med)
+
+    # ═══════════════════════════════════════════════════════
+    # PASS 3: border 설정 완료 후 merge (순서 핵심)
+    # border가 regular cell에 있을 때 설정 → merge 후에도 XML에 유지
+    # ═══════════════════════════════════════════════════════
+    from openpyxl.utils import column_index_from_string
+    pc = column_index_from_string("P")
+    qc = column_index_from_string("Q")
+    rc = column_index_from_string("R")
+
+    for idx in range(len(sel_df)):
+        r = SR + idx * BLOCK
+
+        # B열(No): 모든 행에 border 설정
+        for ri in range(r, r+3):
+            ws.cell(row=ri, column=2).border = Border(
+                left   = med,
+                right  = thin,
+                top    = med  if ri == r   else thin,
+                bottom = med  if ri == r+2 else thin,
+            )
+        # P열(비고): 모든 행에 border 설정
+        for ri in range(r, r+3):
+            diag    = ws.cell(row=ri, column=pc).border.diagonal
+            diag_dn = ws.cell(row=ri, column=pc).border.diagonalDown
+            ws.cell(row=ri, column=pc).border = Border(
+                left=thin, right=thin,
+                top    = med if ri == r   else thin,
+                bottom = med if ri == r+2 else thin,
+            )
+        # Q열(수익): 모든 행에 border 설정
+        for ri in range(r, r+3):
+            ws.cell(row=ri, column=qc).border = Border(
+                left=thin, right=thin,
+                top    = med if ri == r   else thin,
+                bottom = med if ri == r+2 else thin,
+            )
+        # R열(수익률): 모든 행에 border 설정
+        for ri in range(r, r+3):
+            ws.cell(row=ri, column=rc).border = Border(
+                left=thin, right=med,
+                top    = med if ri == r   else thin,
+                bottom = med if ri == r+2 else thin,
+            )
+
+        # ★ border 설정 후 merge
+        ws.merge_cells(start_row=r, end_row=r+2, start_column=2,  end_column=2)
+        ws.merge_cells(start_row=r, end_row=r+2, start_column=pc, end_column=pc)
+        ws.merge_cells(start_row=r, end_row=r+2, start_column=qc, end_column=qc)
+        ws.merge_cells(start_row=r, end_row=r+2, start_column=rc, end_column=rc)
+
+        # ★ merge 후 top-left + bottom phantom 셀에 border 재설정
+        # (openpyxl이 merge 시 phantom top/bottom을 지우므로 재설정 필수)
+        # B열 (No)
+        ws.cell(row=r,   column=2).border = Border(left=med, right=thin, top=med, bottom=med)
+        ws.cell(row=r+2, column=2).border = Border(left=med, right=thin, top=thin, bottom=med)
+        # P열 (비고)
+        ws.cell(row=r,   column=pc).border = Border(left=thin, right=thin, top=med, bottom=med)
+        ws.cell(row=r+2, column=pc).border = Border(left=thin, right=thin, top=thin, bottom=med)
+        # Q열 (수익)
+        ws.cell(row=r,   column=qc).border = Border(left=thin, right=thin, top=med, bottom=med)
+        ws.cell(row=r+2, column=qc).border = Border(left=thin, right=thin, top=thin, bottom=med)
+        # R열 (수익률)
+        ws.cell(row=r,   column=rc).border = Border(left=thin, right=med, top=med, bottom=med)
+        ws.cell(row=r+2, column=rc).border = Border(left=thin, right=med, top=thin, bottom=med)
 
     buf = io.BytesIO()
     wb.save(buf); buf.seek(0)
