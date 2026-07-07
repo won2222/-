@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v3.9"
+VERSION     = "v3.9.1"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -662,8 +662,8 @@ def fetch_d2b(keywords, start, end, test_mode):
             seen.add(key); dedup.append(r)
         else:
             for d in dedup:
-                if (d['출처기관'], d['공고번호']) == key and r['매칭키워드'] not in d['매칭키워드']:
-                    d['매칭키워드'] += f",{r['매칭키워드']}"
+                if (d['출처기관'], d['공고번호']) == key and r['_키워드'] not in d['_키워드']:
+                    d['_키워드'] += f",{r['_키워드']}"
     return dedup
 
 # =====================================================================
