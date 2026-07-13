@@ -52,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.1"
+VERSION     = "v4.2"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -958,10 +958,6 @@ if "errors" not in st.session_state: st.session_state.errors = {}
 if run:
     errors, all_rows = {}, []
 
-    def run_agency(name, fn):
-        try:    return name, fn(), None
-        except Exception as e: return name, [], str(e)
-
     steps = {
         "나라장터":   lambda: fetch_narajangter(keywords, start_dt, end_dt, test_mode),
         "국방부":     lambda: fetch_d2b(keywords, start_dt, end_dt, test_mode),
@@ -976,19 +972,23 @@ if run:
     for n in steps:
         status_el[n].markdown(f"**{n}**\n\n⏳")
 
+    # ★ 순차 실행 (메모리 절약 - segfault 방지)
     done = 0
-    with ThreadPoolExecutor(max_workers=3) as ex:  # Streamlit Cloud 메모리 절약
-        futures = {ex.submit(run_agency, n, fn): n for n, fn in steps.items()}
-        for future in as_completed(futures):
-            name, rows, err = future.result()
-            done += 1
-            prog.progress(done / len(steps), text=f"{name} 완료 ({done}/{len(steps)})")
-            if err:
-                errors[name] = err
-                status_el[name].markdown(f"**{name}**\n\n❌ 오류")
-            else:
-                all_rows.extend(rows)
-                status_el[name].markdown(f"**{name}**\n\n✅ {len(rows)}건")
+    for name, fn in steps.items():
+        try:
+            rows = fn()
+            err  = None
+        except Exception as e:
+            rows = []
+            err  = str(e)
+        done += 1
+        prog.progress(done / len(steps), text=f"{name} 완료 ({done}/{len(steps)})")
+        if err:
+            errors[name] = err
+            status_el[name].markdown(f"**{name}**\n\n❌ 오류")
+        else:
+            all_rows.extend(rows)
+            status_el[name].markdown(f"**{name}**\n\n✅ {len(rows)}건")
 
     prog.progress(1.0, text="완료")
     df = pd.DataFrame(all_rows)
