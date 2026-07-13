@@ -7,6 +7,8 @@
   v2.7  흰화면 오류 수정 (구글폰트/복잡CSS 제거), 누락 함수 복구
 """
 import streamlit as st
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -47,8 +49,9 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.0"
+VERSION     = "v4.0.1"
 TODAY       = datetime.now()
+SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
                     "식물성", "부유", "초본류", "초목류", "임목", "폐가구",
@@ -126,9 +129,7 @@ def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
 def fetch_scsbid_rates(keywords_tuple: tuple) -> dict:
     """최근 3개월 개찰결과로 키워드별 평균 투찰율 반환. 가장 구체적 키워드 우선."""
     import xml.etree.ElementTree as ET
-    import urllib3
     from collections import defaultdict
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     kw_sorted = sorted(keywords_tuple, key=len, reverse=True)
     all_items = []
