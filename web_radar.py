@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v3.9.4"
+VERSION     = "v4.0"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
@@ -120,6 +120,56 @@ def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
         '_공고일시': notice_dt, '_개찰일시': open_dt, '_키워드': keyword, '_비고': extra,
     }
 
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_scsbid_rates(keywords_tuple: tuple) -> dict:
+    """최근 3개월 개찰결과로 키워드별 평균 투찰율 반환. 가장 구체적 키워드 우선."""
+    import xml.etree.ElementTree as ET
+    import urllib3
+    from collections import defaultdict
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    kw_sorted = sorted(keywords_tuple, key=len, reverse=True)
+    all_items = []
+    for m in range(3):
+        e_dt = TODAY - timedelta(days=30 * m)
+        s_dt = TODAY - timedelta(days=30 * (m + 1))
+        try:
+            res = requests.get(SCSBID_URL, params={
+                'ServiceKey': unquote(SERVICE_KEY),
+                'inqryDiv': '1',
+                'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
+                'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
+                'numOfRows': '500', 'pageNo': '1',
+            }, timeout=15, verify=False)
+            if res.status_code != 200: continue
+            root = ET.fromstring(res.text)
+            if root.findtext('.//resultCode') != '00': continue
+            all_items.extend(root.findall('.//item'))
+        except: pass
+
+    kw_rates = defaultdict(list)
+    for item in all_items:
+        bid_nm = item.findtext('bidNtceNm') or ''
+        oci    = item.findtext('opengCorpInfo') or ''
+        if '완료' not in (item.findtext('progrsDivCdNm') or ''): continue
+        matched = next((kw for kw in kw_sorted if kw in bid_nm), None)
+        if not matched: continue
+        parts = oci.split('^')
+        if len(parts) >= 5:
+            try:
+                rate = float(parts[4])
+                if 50 < rate < 100:
+                    kw_rates[matched].append(rate)
+            except: pass
+
+    result = {kw: {'avg': sum(r)/len(r), 'count': len(r)}
+              for kw, r in kw_rates.items()}
+    all_r = [r for rates in kw_rates.values() for r in rates]
+    if all_r:
+        result['__전체__'] = {'avg': sum(all_r)/len(all_r), 'count': len(all_r)}
+    return result
 
 def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
     """
@@ -457,6 +507,65 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         # R열 (수익률)
         ws.cell(row=r,   column=rc).border = Border(left=thin, right=med, top=med, bottom=med)
         ws.cell(row=r+2, column=rc).border = Border(left=thin, right=med, top=thin, bottom=med)
+
+    # ═══════════════════════════════════════════════════════
+    # 낙찰이력 참고 시트 추가
+    # ═══════════════════════════════════════════════════════
+    try:
+        # 선택된 공고들의 키워드 수집
+        all_kws = set()
+        for _, row in sel_df.iterrows():
+            kw = str(row.get('_키워드', '') or '')
+            for k in kw.split(','):
+                k = k.strip()
+                if k: all_kws.add(k)
+
+        scsbid_data = fetch_scsbid_rates(tuple(sorted(all_kws)))
+
+        ws_ref = wb.create_sheet("낙찰이력참고")
+        ws_ref['A1'] = "키워드별 낙찰이력 (최근 3개월)"
+        ws_ref['A1'].font = Font(bold=True, size=12)
+        ws_ref.append([])
+        ws_ref.append(["키워드", "건수", "평균 투찰율(%)", "참고값 계산 방법"])
+        for cell in ws_ref[3]:
+            cell.font = Font(bold=True)
+
+        for kw, info in sorted(scsbid_data.items(), key=lambda x: -x[1]['count']):
+            ws_ref.append([kw, info['count'], round(info['avg'], 3),
+                          "참고값 = 투찰율/100 / 낙찰하한율" if kw == "__전체__" else ""])
+
+        ws_ref.append([])
+        ws_ref.append(["※ 참고값 계산: 평균투찰율/100 ÷ 해당공고_낙찰하한율"])
+        ws_ref.append(["  예) 평균투찰율=88.1%, 낙찰하한율=0.9 → 참고값=0.979"])
+        ws_ref.append(["  투찰금액 = 기초금액 × 낙찰하한율 × 참고값"])
+
+        # 참고값을 각 블록에 표시 (N{r+2} 옆 O{r+2}에 추가)
+        for idx, (_, row) in enumerate(sel_df.iterrows()):
+            r = SR + idx * BLOCK
+            kw = str(row.get('_키워드', '') or '').split(',')[0].strip()
+            lwlt = row.get('낙찰하한율', '-')
+            try:
+                lwlt_f = float(lwlt) if str(lwlt) not in ('-','','None') else None
+            except: lwlt_f = None
+
+            # 해당 키워드 또는 전체 평균 투찰율
+            info = scsbid_data.get(kw) or scsbid_data.get('__전체__')
+            if info and lwlt_f:
+                ref_val = round((info['avg'] / 100) / lwlt_f, 4)
+                c = ws.cell(row=r+2, column=15)  # O열
+                c.value = ref_val
+                c.number_format = '0.0000'
+                c.font = Font(color='FF0000', bold=True)
+                c.alignment = Alignment(horizontal='right', vertical='center')
+                c.border = bd_thin()
+                # 레이블
+                ws.cell(row=r+1, column=15).value = '참고값'
+                ws.cell(row=r+1, column=15).fill = PatternFill("solid", fgColor="FFF2CC")
+                ws.cell(row=r+1, column=15).font = Font(size=8, bold=True)
+                ws.cell(row=r+1, column=15).alignment = Alignment(horizontal='center', vertical='center')
+                ws.cell(row=r+1, column=15).border = bd_thin()
+    except Exception as e:
+        pass  # 낙찰이력 조회 실패해도 Excel은 정상 생성
 
     buf = io.BytesIO()
     wb.save(buf); buf.seek(0)
