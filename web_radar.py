@@ -7,8 +7,11 @@
   v2.7  흰화면 오류 수정 (구글폰트/복잡CSS 제거), 누락 함수 복구
 """
 import streamlit as st
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -49,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.0.1"
+VERSION     = "v4.0.2"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -137,14 +140,17 @@ def fetch_scsbid_rates(keywords_tuple: tuple) -> dict:
         e_dt = TODAY - timedelta(days=30 * m)
         s_dt = TODAY - timedelta(days=30 * (m + 1))
         try:
-            res = requests.get(SCSBID_URL, params={
-                'ServiceKey': unquote(SERVICE_KEY),
-                'inqryDiv': '1',
-                'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
-                'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
-                'numOfRows': '500', 'pageNo': '1',
-            }, timeout=15, verify=False)
-            if res.status_code != 200: continue
+            try:
+                res = requests.get(SCSBID_URL, params={
+                    'ServiceKey': unquote(SERVICE_KEY),
+                    'inqryDiv': '1',
+                    'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
+                    'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
+                    'numOfRows': '500', 'pageNo': '1',
+                }, timeout=15)
+            except Exception:
+                res = None
+            if res is None or res.status_code != 200: continue
             root = ET.fromstring(res.text)
             if root.findtext('.//resultCode') != '00': continue
             all_items.extend(root.findall('.//item'))
@@ -709,7 +715,7 @@ def fetch_d2b(keywords, start, end, test_mode):
                            'prqudoPresentnClosDateEnd':   d2b_end})
         try:
             res = requests.get(config['list_url'], params=params, headers=HEADERS, timeout=15)
-            if res.status_code != 200: continue
+            if res is None or res.status_code != 200: continue
             items = res.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
             items = [items] if isinstance(items, dict) else items
 
