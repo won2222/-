@@ -52,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.3"
+VERSION     = "v4.4"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -573,64 +573,78 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         ws.cell(row=r,   column=rc).border = Border(left=thin, right=med, top=med, bottom=med)
         ws.cell(row=r+2, column=rc).border = Border(left=thin, right=med, top=thin, bottom=med)
 
-    # ═══ 낙찰이력 참고 시트 ═══
+    # ═══ 낙찰이력 참고 시트 (A방식: 투찰율/낙찰하한율 비율 평균) ═══
     try:
+        # 키워드 수집
         all_kws = set()
         for _, row in sel_df.iterrows():
             for k in str(row.get('_키워드','') or '').split(','):
                 if k.strip(): all_kws.add(k.strip())
 
-        scsbid = fetch_scsbid_rates_safe(tuple(sorted(all_kws)))
+        # 항상 시트 생성 (진단 포함)
+        ws_h = wb.create_sheet("낙찰이력참고")
+        for col, w in {'A':20,'B':10,'C':16,'D':16,'E':22}.items():
+            ws_h.column_dimensions[col].width = w
+        ws_h['A1'] = "낙찰이력 참고 (최근 3개월 / A방식)"
+        ws_h['A1'].font = Font(bold=True, size=12)
+        ws_h.append([])
+        ws_h.append(["수집 키워드:", str(sorted(all_kws)) if all_kws else "없음(키워드 미설정)"])
+        ws_h.append([])
+
+        if all_kws:
+            scsbid = fetch_scsbid_rates_safe(tuple(sorted(all_kws)))
+        else:
+            scsbid = {}
 
         if scsbid:
-            ws_h = wb.create_sheet("낙찰이력참고")
-            ws_h.column_dimensions['A'].width = 15
-            ws_h.column_dimensions['B'].width = 8
-            ws_h.column_dimensions['C'].width = 14
-            ws_h.column_dimensions['D'].width = 14
-
-            ws_h['A1'] = "낙찰이력 참고 (최근 3개월)"
-            ws_h['A1'].font = Font(bold=True, size=12)
-            ws_h.append([])
+            # 통계 테이블
             ws_h.append(["키워드", "건수", "평균투찰율(%)", "평균낙찰하한율(%)", "참고값(투찰율/낙찰하한율)"])
-            for c in ws_h[3]: c.font = Font(bold=True)
-
+            for c in ws_h[ws_h.max_row]: c.font = Font(bold=True)
             for kw, info in sorted(scsbid.items(), key=lambda x: -x[1]['count']):
                 ws_h.append([
                     kw,
                     info['count'],
-                    info.get('avg_t_rate', info.get('avg', '-')),
+                    info.get('avg_t_rate', '-'),
                     info.get('avg_lwlt', '-'),
                     info.get('ratio', '-'),
                 ])
-
             ws_h.append([])
-            ws_h.append(["※ 참고값 = 평균투찰율/100 ÷ 해당공고_낙찰하한율"])
-            ws_h.append(["※ 투찰금액 ≈ 기초금액 × 낙찰하한율 × 참고값"])
+            ws_h.append(["※ 투찰금액 = 기초금액 × 낙찰하한율 × 참고값"])
+        else:
+            ws_h.append(["⚠️ 낙찰이력 없음", "API 응답 없음 또는 키워드 매칭 공고 없음"])
 
-            # 각 블록 calc행 O열에 참고값 추가
+        # 각 블록 calc행에 참고값 표시
+        if scsbid:
+            kw_sorted = sorted(all_kws, key=len, reverse=True)
             for idx, (_, row) in enumerate(sel_df.iterrows()):
                 r = SR + idx * BLOCK
-                kw = str(row.get('_키워드','') or '').split(',')[0].strip()
+                bid_kw = next((k for k in kw_sorted
+                               if k in str(row.get('공고명',''))), None)
+                info = (scsbid.get(bid_kw) if bid_kw else None) or scsbid.get('__전체__')
+                if not info: continue
                 lwlt = row.get('낙찰하한율', '-')
                 try: lwlt_f = float(lwlt) if str(lwlt) not in ('-','','None') else None
                 except: lwlt_f = None
-                info = scsbid.get(kw) or scsbid.get('__전체__')
-                if info and lwlt_f and lwlt_f > 0:
-                    # A방식: mean(투찰율/낙찰하한율) 사용
-                    ref = info.get('ratio') or round((info.get('avg_t_rate',0)/100) / (lwlt_f/100 if lwlt_f > 1 else lwlt_f), 4)
+                ref = info.get('ratio')
+                if ref and lwlt_f and lwlt_f > 0:
                     c = ws.cell(row=r+1, column=15)
-                    c.value = '참고값'; c.fill = PatternFill("solid", fgColor="FFF2CC")
+                    c.value = '참고값'
+                    c.fill = PatternFill("solid", fgColor="FFF2CC")
                     c.font = Font(size=8, bold=True)
                     c.alignment = Alignment(horizontal='center', vertical='center')
                     c.border = bd_thin()
                     c2 = ws.cell(row=r+2, column=15)
-                    c2.value = ref; c2.number_format = '0.0000'
+                    c2.value = ref
+                    c2.number_format = '0.0000'
                     c2.font = Font(color='FF0000', bold=True)
                     c2.alignment = Alignment(horizontal='right', vertical='center')
                     c2.border = bd_thin()
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            ws_h = wb.create_sheet("낙찰이력참고")
+            ws_h['A1'] = f"오류: {str(e)}"
+        except Exception:
+            pass
 
     buf = io.BytesIO()
     wb.save(buf); buf.seek(0)
