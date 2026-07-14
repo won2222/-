@@ -52,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.7"
+VERSION     = "v4.8"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -140,7 +140,8 @@ def fetch_scsbid_rates_safe(keywords_tuple: tuple) -> dict:
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed as asc
     try:
-        kw_sorted = sorted(keywords_tuple, key=len, reverse=True)
+        # 항상 전체 키워드 목록 사용 (스마트 매칭 정확도 향상)
+        kw_sorted = sorted(DEFAULT_KEYWORDS, key=len, reverse=True)
         BID_URL = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
         KEY = unquote(SERVICE_KEY)
 
@@ -620,10 +621,24 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
     # ═══ 낙찰이력 참고 시트 (A방식: 투찰율/낙찰하한율 비율 평균) ═══
     try:
         # 키워드 수집
+        # 공고명 기반 스마트 키워드 수집 (단순 _키워드 필드보다 정확)
         all_kws = set()
+        _kw_full_sorted = sorted(DEFAULT_KEYWORDS, key=len, reverse=True)
+        import re as _re2
+        def _smart_kw(bid_nm):
+            for suffix in ['폐기물','폐합성수지','잡물']:
+                for prefix in _re2.findall(rf'(\w+){suffix}', bid_nm):
+                    if prefix in _kw_full_sorted: return prefix
+                    for kw in _kw_full_sorted:
+                        if kw in prefix and kw != suffix: return kw
+            non_g = [k for k in _kw_full_sorted if k != '폐기물']
+            for kw in non_g:
+                if kw in bid_nm: return kw
+            return '폐기물' if '폐기물' in bid_nm else None
+
         for _, row in sel_df.iterrows():
-            for k in str(row.get('_키워드','') or '').split(','):
-                if k.strip(): all_kws.add(k.strip())
+            kw = _smart_kw(str(row.get('공고명','') or ''))
+            if kw: all_kws.add(kw)
 
         # 항상 시트 생성 (진단 포함)
         ws_h = wb.create_sheet("낙찰이력참고")
@@ -667,18 +682,7 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
             kw_sorted = sorted(all_kws, key=len, reverse=True)
             for idx, (_, row) in enumerate(sel_df.iterrows()):
                 r = SR + idx * BLOCK
-                import re as _re
-                def _match(bid_nm):
-                    for suffix in ['폐기물','폐합성수지','잡물']:
-                        for prefix in _re.findall(rf'(\w+){suffix}', bid_nm):
-                            if prefix in kw_sorted: return prefix
-                            for kw in kw_sorted:
-                                if kw in prefix and kw != suffix: return kw
-                    non_g = [k for k in kw_sorted if k != '폐기물']
-                    for kw in non_g:
-                        if kw in bid_nm: return kw
-                    return '폐기물' if '폐기물' in bid_nm else None
-                bid_kw = _match(str(row.get('공고명','')))
+                bid_kw = _smart_kw(str(row.get('공고명','') or ''))
                 info = (scsbid.get(bid_kw) if bid_kw else None) or scsbid.get('__전체__')
                 if not info: continue
                 lwlt = row.get('낙찰하한율', '-')
