@@ -52,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.4"
+VERSION     = "v4.5"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -183,29 +183,35 @@ def fetch_scsbid_rates_safe(keywords_tuple: tuple) -> dict:
         if not matched_bids:
             return {}
 
-        # Step 3: 낙찰하한율 조회 (최대 40건, 병렬 5)
-        def get_lwlt(bid_no):
+        # Step 3: 낙찰하한율 일괄 조회
+        # 같은 날짜 범위로 나라장터 API 조회 → bidNtceNo 매칭
+        target = matched_bids[:40]
+        target_nos = {b[0] for b in target}
+        lwlt_map = {}
+
+        # 각 월별 날짜 범위로 나라장터 입찰공고 조회
+        for m in range(3):
+            e_dt = TODAY - timedelta(days=30 * m)
+            s_dt = TODAY - timedelta(days=30 * (m + 1))
             try:
                 res = requests.get(BID_URL, params={
-                    'serviceKey': KEY, 'numOfRows': '1', 'pageNo': '1',
-                    'type': 'json', 'inqryDiv': '2', 'bidNtceNo': bid_no,
-                }, timeout=8)
-                if res.status_code != 200: return None
-                items = res.json().get('response', {}).get('body', {}).get('items', [])
+                    'serviceKey': KEY, 'numOfRows': '500', 'pageNo': '1',
+                    'type': 'json', 'inqryDiv': '1',
+                    'inqryBgnDt': s_dt.strftime('%Y%m%d'),
+                    'inqryEndDt': e_dt.strftime('%Y%m%d'),
+                }, timeout=10)
+                if res.status_code != 200: continue
+                items = res.json().get('response',{}).get('body',{}).get('items',[])
                 if isinstance(items, dict): items = [items]
-                if not items: return None
-                lwlt = items[0].get('sucsfbidLwltRate')
-                return float(lwlt) if lwlt else None
-            except Exception: return None
-
-        target = matched_bids[:40]
-        lwlt_map = {}
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            futs = {ex.submit(get_lwlt, b[0]): b[0] for b in target}
-            for f in asc(futs):
-                bid_no = futs[f]
-                try: lwlt_map[bid_no] = f.result()
-                except Exception: pass
+                for it in items:
+                    bno = str(it.get('bidNtceNo',''))
+                    if bno in target_nos:
+                        lwlt = it.get('sucsfbidLwltRate')
+                        if lwlt:
+                            try: lwlt_map[bno] = float(lwlt)
+                            except Exception: pass
+                if len(lwlt_map) >= len(target_nos): break
+            except Exception: continue
 
         # Step 4: ratio = 투찰율 / 낙찰하한율
         kw_ratios = defaultdict(list)
