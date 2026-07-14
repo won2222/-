@@ -52,7 +52,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.2"
+VERSION     = "v4.3"
 TODAY       = datetime.now()
 SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
@@ -130,19 +130,28 @@ def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
 
 
 def fetch_scsbid_rates_safe(keywords_tuple: tuple) -> dict:
-    """최근 3개월 개찰결과 - 키워드별 평균 투찰율. 실패시 빈 dict 반환."""
+    """
+    A방식: 역사적 공고별 투찰율/낙찰하한율 비율 평균
+    1) 낙찰정보 API로 과거 3개월 개찰결과 + 키워드 매칭
+    2) 매칭 공고의 낙찰하한율을 입찰공고 API로 추가 조회
+    3) ratio = 투찰율/낙찰하한율 평균 = 참고값
+    """
     import xml.etree.ElementTree as ET
     from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed as asc
     try:
         kw_sorted = sorted(keywords_tuple, key=len, reverse=True)
+        BID_URL = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
+        KEY = unquote(SERVICE_KEY)
+
+        # Step 1: 3개월 개찰결과 수집
         all_items = []
         for m in range(3):
             e_dt = TODAY - timedelta(days=30 * m)
             s_dt = TODAY - timedelta(days=30 * (m + 1))
             try:
                 res = requests.get(SCSBID_URL, params={
-                    'ServiceKey': unquote(SERVICE_KEY),
-                    'inqryDiv': '1',
+                    'ServiceKey': KEY, 'inqryDiv': '1',
                     'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
                     'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
                     'numOfRows': '300', 'pageNo': '1',
@@ -153,29 +162,79 @@ def fetch_scsbid_rates_safe(keywords_tuple: tuple) -> dict:
                 all_items.extend(root.findall('.//item'))
             except Exception: continue
 
-        kw_rates = defaultdict(list)
+        # Step 2: 키워드 매칭 + (bidNtceNo, 투찰율) 추출
+        matched_bids = []
         for item in all_items:
             bid_nm = item.findtext('bidNtceNm') or ''
             oci    = item.findtext('opengCorpInfo') or ''
             if '완료' not in (item.findtext('progrsDivCdNm') or ''): continue
-            matched = next((kw for kw in kw_sorted if kw in bid_nm), None)
-            if not matched: continue
+            kw = next((k for k in kw_sorted if k in bid_nm), None)
+            if not kw: continue
+            bid_no = item.findtext('bidNtceNo') or ''
+            if not bid_no: continue
             parts = oci.split('^')
             if len(parts) >= 5:
                 try:
-                    rate = float(parts[4])
-                    if 50 < rate < 100:
-                        kw_rates[matched].append(rate)
+                    t_rate = float(parts[4])
+                    if 50 < t_rate < 100:
+                        matched_bids.append((bid_no, t_rate, kw))
                 except Exception: pass
 
-        result = {kw: {'avg': round(sum(r)/len(r), 3), 'count': len(r)}
-                  for kw, r in kw_rates.items()}
-        all_r = [r for rates in kw_rates.values() for r in rates]
+        if not matched_bids:
+            return {}
+
+        # Step 3: 낙찰하한율 조회 (최대 40건, 병렬 5)
+        def get_lwlt(bid_no):
+            try:
+                res = requests.get(BID_URL, params={
+                    'serviceKey': KEY, 'numOfRows': '1', 'pageNo': '1',
+                    'type': 'json', 'inqryDiv': '2', 'bidNtceNo': bid_no,
+                }, timeout=8)
+                if res.status_code != 200: return None
+                items = res.json().get('response', {}).get('body', {}).get('items', [])
+                if isinstance(items, dict): items = [items]
+                if not items: return None
+                lwlt = items[0].get('sucsfbidLwltRate')
+                return float(lwlt) if lwlt else None
+            except Exception: return None
+
+        target = matched_bids[:40]
+        lwlt_map = {}
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futs = {ex.submit(get_lwlt, b[0]): b[0] for b in target}
+            for f in asc(futs):
+                bid_no = futs[f]
+                try: lwlt_map[bid_no] = f.result()
+                except Exception: pass
+
+        # Step 4: ratio = 투찰율 / 낙찰하한율
+        kw_ratios = defaultdict(list)
+        for bid_no, t_rate, kw in target:
+            lwlt = lwlt_map.get(bid_no)
+            if lwlt and lwlt > 0:
+                ratio = (t_rate / 100) / (lwlt / 100)
+                if 0.85 < ratio < 1.15:
+                    kw_ratios[kw].append({'ratio': ratio, 't_rate': t_rate, 'lwlt': lwlt})
+
+        result = {}
+        all_r = [d['ratio'] for v in kw_ratios.values() for d in v]
+        for kw, vals in kw_ratios.items():
+            ratios = [d['ratio'] for d in vals]
+            result[kw] = {
+                'ratio':      round(sum(ratios)/len(ratios), 4),
+                'count':      len(ratios),
+                'avg_t_rate': round(sum(d['t_rate'] for d in vals)/len(vals), 3),
+                'avg_lwlt':   round(sum(d['lwlt']   for d in vals)/len(vals), 3),
+            }
         if all_r:
-            result['__전체__'] = {'avg': round(sum(all_r)/len(all_r), 3), 'count': len(all_r)}
+            result['__전체__'] = {
+                'ratio': round(sum(all_r)/len(all_r), 4),
+                'count': len(all_r),
+            }
         return result
     except Exception:
         return {}
+
 
 def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
     """
@@ -533,12 +592,17 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
             ws_h['A1'] = "낙찰이력 참고 (최근 3개월)"
             ws_h['A1'].font = Font(bold=True, size=12)
             ws_h.append([])
-            ws_h.append(["키워드", "건수", "평균투찰율(%)", "참고값계산식"])
+            ws_h.append(["키워드", "건수", "평균투찰율(%)", "평균낙찰하한율(%)", "참고값(투찰율/낙찰하한율)"])
             for c in ws_h[3]: c.font = Font(bold=True)
 
             for kw, info in sorted(scsbid.items(), key=lambda x: -x[1]['count']):
-                ws_h.append([kw, info['count'], info['avg'],
-                             "= 평균투찰율/100 ÷ 낙찰하한율" if kw == "__전체__" else ""])
+                ws_h.append([
+                    kw,
+                    info['count'],
+                    info.get('avg_t_rate', info.get('avg', '-')),
+                    info.get('avg_lwlt', '-'),
+                    info.get('ratio', '-'),
+                ])
 
             ws_h.append([])
             ws_h.append(["※ 참고값 = 평균투찰율/100 ÷ 해당공고_낙찰하한율"])
@@ -553,7 +617,8 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
                 except: lwlt_f = None
                 info = scsbid.get(kw) or scsbid.get('__전체__')
                 if info and lwlt_f and lwlt_f > 0:
-                    ref = round((info['avg']/100) / lwlt_f, 4)
+                    # A방식: mean(투찰율/낙찰하한율) 사용
+                    ref = info.get('ratio') or round((info.get('avg_t_rate',0)/100) / (lwlt_f/100 if lwlt_f > 1 else lwlt_f), 4)
                     c = ws.cell(row=r+1, column=15)
                     c.value = '참고값'; c.fill = PatternFill("solid", fgColor="FFF2CC")
                     c.font = Font(size=8, bold=True)
