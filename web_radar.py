@@ -7,11 +7,6 @@
   v2.7  흰화면 오류 수정 (구글폰트/복잡CSS 제거), 누락 함수 복구
 """
 import streamlit as st
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -52,9 +47,8 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.8"
+VERSION     = "v4.9.1"
 TODAY       = datetime.now()
-SCSBID_URL  = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
                     "식물성", "부유", "초본류", "초목류", "임목", "폐가구",
@@ -128,157 +122,6 @@ def to_row(source, notice_no, title, agency, notice_dt, close_dt, open_dt,
 
 
 
-
-def fetch_scsbid_rates_safe(keywords_tuple: tuple) -> dict:
-    """
-    A방식: 역사적 공고별 투찰율/낙찰하한율 비율 평균
-    1) 낙찰정보 API로 과거 3개월 개찰결과 + 키워드 매칭
-    2) 매칭 공고의 낙찰하한율을 입찰공고 API로 추가 조회
-    3) ratio = 투찰율/낙찰하한율 평균 = 참고값
-    """
-    import xml.etree.ElementTree as ET
-    from collections import defaultdict
-    from concurrent.futures import ThreadPoolExecutor, as_completed as asc
-    try:
-        # 항상 전체 키워드 목록 사용 (스마트 매칭 정확도 향상)
-        kw_sorted = sorted(DEFAULT_KEYWORDS, key=len, reverse=True)
-        BID_URL = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
-        KEY = unquote(SERVICE_KEY)
-
-        # Step 1: 3개월 개찰결과 수집
-        all_items = []
-        for m in range(3):
-            e_dt = TODAY - timedelta(days=30 * m)
-            s_dt = TODAY - timedelta(days=30 * (m + 1))
-            try:
-                res = requests.get(SCSBID_URL, params={
-                    'ServiceKey': KEY, 'inqryDiv': '1',
-                    'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
-                    'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
-                    'numOfRows': '300', 'pageNo': '1',
-                }, timeout=10)
-                if res.status_code != 200: continue
-                root = ET.fromstring(res.text)
-                if root.findtext('.//resultCode') != '00': continue
-                all_items.extend(root.findall('.//item'))
-            except Exception: continue
-
-        def match_kw_smart(bid_nm):
-            """X폐기물 합성어 패턴에서 앞 타입 키워드를 우선 추출"""
-            import re as _re
-            for suffix in ['폐기물', '폐합성수지', '잡물']:
-                for prefix in _re.findall(rf'(\w+){suffix}', bid_nm):
-                    if prefix in kw_sorted:
-                        return prefix
-                    for kw in kw_sorted:
-                        if kw in prefix and kw != suffix:
-                            return kw
-            non_generic = [k for k in kw_sorted if k != '폐기물']
-            for kw in non_generic:
-                if kw in bid_nm:
-                    return kw
-            return '폐기물' if '폐기물' in bid_nm else None
-
-        # Step 2: 스마트 키워드 매칭 + (bidNtceNo, 투찰율) 추출
-        matched_bids = []
-        for item in all_items:
-            bid_nm = item.findtext('bidNtceNm') or ''
-            oci    = item.findtext('opengCorpInfo') or ''
-            if '완료' not in (item.findtext('progrsDivCdNm') or ''): continue
-            kw = match_kw_smart(bid_nm)
-            if not kw: continue
-            bid_no = item.findtext('bidNtceNo') or ''
-            if not bid_no: continue
-            parts = oci.split('^')
-            if len(parts) >= 5:
-                try:
-                    t_rate = float(parts[4])
-                    if 50 < t_rate < 100:
-                        matched_bids.append((bid_no, t_rate, kw))
-                except Exception: pass
-
-        if not matched_bids:
-            return {}
-
-        # Step 3: 낙찰하한율 일괄 조회
-        # 같은 날짜 범위로 나라장터 API 조회 → bidNtceNo 매칭
-        target = matched_bids[:40]
-        target_nos = {b[0] for b in target}
-        lwlt_map = {}
-
-        # 각 월별 날짜 범위로 나라장터 입찰공고 조회
-        for m in range(3):
-            e_dt = TODAY - timedelta(days=30 * m)
-            s_dt = TODAY - timedelta(days=30 * (m + 1))
-            try:
-                res = requests.get(BID_URL, params={
-                    'serviceKey': KEY, 'numOfRows': '500', 'pageNo': '1',
-                    'type': 'json', 'inqryDiv': '1',
-                    'inqryBgnDt': s_dt.strftime('%Y%m%d'),
-                    'inqryEndDt': e_dt.strftime('%Y%m%d'),
-                }, timeout=10)
-                if res.status_code != 200: continue
-                items = res.json().get('response',{}).get('body',{}).get('items',[])
-                if isinstance(items, dict): items = [items]
-                for it in items:
-                    bno = str(it.get('bidNtceNo',''))
-                    if bno in target_nos:
-                        lwlt = it.get('sucsfbidLwltRate')
-                        if lwlt:
-                            try: lwlt_map[bno] = float(lwlt)
-                            except Exception: pass
-                if len(lwlt_map) >= len(target_nos): break
-            except Exception: continue
-
-        # Step 4: ratio = 투찰율 / 낙찰하한율
-        kw_ratios = defaultdict(list)
-        for bid_no, t_rate, kw in target:
-            lwlt = lwlt_map.get(bid_no)
-            if lwlt and lwlt > 0:
-                ratio = (t_rate / 100) / (lwlt / 100)
-                if 0.85 < ratio < 1.15:
-                    kw_ratios[kw].append({'ratio': ratio, 't_rate': t_rate, 'lwlt': lwlt})
-
-        def top2_peaks(data_list, bin_width=0.005):
-            """분포에서 가장 많이 몰린 구간 상위 2개 반환"""
-            if not data_list: return []
-            from collections import Counter
-            # 구간화: 0.005 단위로 반올림
-            bins = Counter(round(r / bin_width) * bin_width for r in data_list)
-            top2 = bins.most_common(2)
-            total = len(data_list)
-            result = []
-            for center, cnt in top2:
-                # 해당 구간 내 실제 값들의 평균
-                in_bin = [r for r in data_list
-                          if abs(r - center) < bin_width]
-                result.append({
-                    'ratio':   round(sum(in_bin)/len(in_bin), 4),
-                    'count':   cnt,
-                    'pct':     round(cnt/total*100, 1),
-                })
-            return result
-
-        result = {}
-        all_r = [d['ratio'] for v in kw_ratios.values() for d in v]
-        for kw, vals in kw_ratios.items():
-            ratios = [d['ratio'] for d in vals]
-            result[kw] = {
-                'ratio':      round(sum(ratios)/len(ratios), 4),
-                'count':      len(ratios),
-                'avg_t_rate': round(sum(d['t_rate'] for d in vals)/len(vals), 3),
-                'avg_lwlt':   round(sum(d['lwlt']   for d in vals)/len(vals), 3),
-                'top2':       top2_peaks(ratios),
-            }
-        if all_r:
-            result['__전체__'] = {
-                'ratio': round(sum(all_r)/len(all_r), 4),
-                'count': len(all_r),
-                'top2':  top2_peaks(all_r),
-            }
-        return result
-    except Exception:
-        return {}
 
 
 def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
@@ -618,104 +461,63 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
         ws.cell(row=r,   column=rc).border = Border(left=thin, right=med, top=med, bottom=med)
         ws.cell(row=r+2, column=rc).border = Border(left=thin, right=med, top=thin, bottom=med)
 
-    # ═══ 낙찰이력 참고 시트 (A방식: 투찰율/낙찰하한율 비율 평균) ═══
+    # ═══ 낙찰이력 참고 시트 (폐목재/임목/낙엽/식물성 키워드 기반) ═══
     try:
-        # 키워드 수집
-        # 공고명 기반 스마트 키워드 수집 (단순 _키워드 필드보다 정확)
-        all_kws = set()
-        _kw_full_sorted = sorted(DEFAULT_KEYWORDS, key=len, reverse=True)
-        import re as _re2
-        def _smart_kw(bid_nm):
-            for suffix in ['폐기물','폐합성수지','잡물']:
-                for prefix in _re2.findall(rf'(\w+){suffix}', bid_nm):
-                    if prefix in _kw_full_sorted: return prefix
-                    for kw in _kw_full_sorted:
-                        if kw in prefix and kw != suffix: return kw
-            non_g = [k for k in _kw_full_sorted if k != '폐기물']
-            for kw in non_g:
-                if kw in bid_nm: return kw
-            return '폐기물' if '폐기물' in bid_nm else None
+        scsbid = fetch_scsbid_rates_safe()
 
-        for _, row in sel_df.iterrows():
-            kw = _smart_kw(str(row.get('공고명','') or ''))
-            if kw: all_kws.add(kw)
-
-        # 항상 시트 생성 (진단 포함)
         ws_h = wb.create_sheet("낙찰이력참고")
-        for col, w in {'A':20,'B':10,'C':16,'D':16,'E':22}.items():
+        for col, w in {'A':20,'B':40}.items():
             ws_h.column_dimensions[col].width = w
-        ws_h['A1'] = "낙찰이력 참고 (최근 3개월 / A방식)"
+        ws_h['A1'] = f"투찰 참고값 (폐목재·임목·낙엽·식물성 / 최근 3개월)"
         ws_h['A1'].font = Font(bold=True, size=12)
         ws_h.append([])
-        ws_h.append(["수집 키워드:", str(sorted(all_kws)) if all_kws else "없음(키워드 미설정)"])
-        ws_h.append([])
-
-        if all_kws:
-            scsbid = fetch_scsbid_rates_safe(tuple(sorted(all_kws)))
-        else:
-            scsbid = {}
 
         if scsbid:
-            # 통계 테이블
-            ws_h.append(["키워드", "건수", "평균투찰율(%)", "평균낙찰하한율(%)",
-                           "평균참고값", "★1순위비율(건수/비율%)", "★2순위비율(건수/비율%)"])
-            for c in ws_h[ws_h.max_row]: c.font = Font(bold=True)
-            for kw, info in sorted(scsbid.items(), key=lambda x: -x[1]['count']):
-                top2 = info.get('top2', [])
-                t1 = f"{top2[0]['ratio']} ({top2[0]['count']}건/{top2[0]['pct']}%)" if len(top2) > 0 else '-'
-                t2 = f"{top2[1]['ratio']} ({top2[1]['count']}건/{top2[1]['pct']}%)" if len(top2) > 1 else '-'
-                ws_h.append([
-                    kw,
-                    info['count'],
-                    info.get('avg_t_rate', '-'),
-                    info.get('avg_lwlt', '-'),
-                    info.get('ratio', '-'),
-                    t1, t2,
-                ])
+            top2  = scsbid.get('top2', [])
+            total = scsbid.get('total', 0)
+            mtch  = scsbid.get('matched_count', 0)
+            avg   = scsbid.get('avg', '-')
+
+            ws_h.append(["분석 건수", f"{total}건 (매칭공고 {mtch}건)"])
+            ws_h.append(["평균 참고값", avg])
             ws_h.append([])
-            ws_h.append(["※ 투찰금액 = 기초금액 × 낙찰하한율 × 참고값(1순위 또는 2순위)"])
-        else:
-            ws_h.append(["⚠️ 낙찰이력 없음", "API 응답 없음 또는 키워드 매칭 공고 없음"])
+            ws_h.append(["순위", "참고값(투찰율/낙찰하한율)", "건수", "비율(%)"])
+            for c in ws_h[ws_h.max_row]: c.font = Font(bold=True)
+            for i, pk in enumerate(top2, 1):
+                ws_h.append([f"{i}순위", pk['ratio'], pk['count'], pk['pct']])
+            ws_h.append([])
+            ws_h.append(["※ 투찰금액 = 기초금액 × 낙찰하한율 × 참고값"])
+            ws_h.append(["※ 예) 기초금액=1억, 낙찰하한율=0.9, 참고값=1.008 → 투찰금액=90,720,000"])
 
-        # 각 블록 calc행에 참고값 표시
-        if scsbid:
-            kw_sorted = sorted(all_kws, key=len, reverse=True)
-            for idx, (_, row) in enumerate(sel_df.iterrows()):
+            # 각 공고 블록 O열에 Top2 표시
+            top2_disp = ""
+            for i, pk in enumerate(top2, 1):
+                r_val = pk["ratio"]; p_val = pk["pct"]
+                top2_disp += f"{i}순위:{r_val}({p_val}%)" + chr(10)
+            top2_disp = top2_disp.strip()
+
+            for idx in range(len(sel_df)):
                 r = SR + idx * BLOCK
-                bid_kw = _smart_kw(str(row.get('공고명','') or ''))
-                info = (scsbid.get(bid_kw) if bid_kw else None) or scsbid.get('__전체__')
-                if not info: continue
-                lwlt = row.get('낙찰하한율', '-')
-                try: lwlt_f = float(lwlt) if str(lwlt) not in ('-','','None') else None
-                except: lwlt_f = None
-                ref = info.get('ratio')
-                top2 = info.get('top2', []) if info else []
-                r1 = top2[0]['ratio'] if len(top2) > 0 else ref
-                r2 = top2[1]['ratio'] if len(top2) > 1 else None
-                if r1 and lwlt_f and lwlt_f > 0:
-                    # 서브헤더: 참고값 라벨
-                    c = ws.cell(row=r+1, column=15)
-                    c.value = '★투찰참고'
-                    c.fill = PatternFill("solid", fgColor="FFF2CC")
-                    c.font = Font(size=8, bold=True)
-                    c.alignment = Alignment(horizontal='center', vertical='center')
-                    c.border = bd_thin()
-                    # calc행: 1순위
-                    c2 = ws.cell(row=r+2, column=15)
-                    disp = f"1순위:{r1}"
-                    if r2: disp += f" / 2순위:{r2}"
-                    c2.value = disp
-                    c2.font = Font(color='FF0000', bold=True, size=8)
-                    c2.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                    c2.border = bd_thin()
+                c = ws.cell(row=r+1, column=15)
+                c.value = '★투찰참고'
+                c.fill = PatternFill("solid", fgColor="FFF2CC")
+                c.font = Font(size=8, bold=True)
+                c.alignment = Alignment(horizontal='center', vertical='center')
+                c.border = bd_thin()
+                c2 = ws.cell(row=r+2, column=15)
+                c2.value = top2_disp
+                c2.font = Font(color='FF0000', bold=True, size=8)
+                c2.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                c2.border = bd_thin()
+        else:
+            ws_h.append(["⚠️", "데이터 없음 (API 오류 또는 매칭 공고 없음)"])
     except Exception as e:
         try:
             ws_h = wb.create_sheet("낙찰이력참고")
-            ws_h['A1'] = f"오류: {str(e)}"
-        except Exception:
-            pass
+            ws_h['A1'] = f"오류: {e}"
+        except Exception: pass
 
-    buf = io.BytesIO()
+        buf = io.BytesIO()
     wb.save(buf); buf.seek(0)
     return buf.read()
 
