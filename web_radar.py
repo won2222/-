@@ -47,8 +47,120 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v4.9.1"
+VERSION     = "v5.0"
 TODAY       = datetime.now()
+SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
+SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
+
+def fetch_scsbid_stats() -> dict:
+    """
+    폐목재/낙엽/식물성/폐기물 키워드 3개월 개찰결과 분석
+    Returns: {키워드: {'count':N, 'top2':[{'range':'99.90~99.97%','count':N,'pct':X}, ...]}}
+    """
+    import xml.etree.ElementTree as ET
+    from collections import defaultdict, Counter
+    try:
+        BID_URL = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
+        KEY     = unquote(SERVICE_KEY)
+
+        # Step 1: 3개월 개찰결과 수집
+        all_items = []
+        for m in range(3):
+            e_dt = TODAY - timedelta(days=30 * m)
+            s_dt = TODAY - timedelta(days=30 * (m + 1))
+            try:
+                res = requests.get(SCSBID_URL, params={
+                    'ServiceKey': KEY, 'inqryDiv': '1',
+                    'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
+                    'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
+                    'numOfRows': '300', 'pageNo': '1',
+                }, timeout=10)
+                if res.status_code != 200: continue
+                root = ET.fromstring(res.text)
+                if root.findtext('.//resultCode') != '00': continue
+                all_items.extend(root.findall('.//item'))
+            except Exception: continue
+
+        # Step 2: 키워드별 (bidNtceNo, 투찰율) 추출
+        kw_bids = defaultdict(list)
+        for item in all_items:
+            bid_nm = item.findtext('bidNtceNm') or ''
+            oci    = item.findtext('opengCorpInfo') or ''
+            if '완료' not in (item.findtext('progrsDivCdNm') or ''): continue
+            # 우선순위: 폐목재>낙엽>식물성>폐기물 (구체적 키워드 우선)
+            kw = next((k for k in ['폐목재','낙엽','식물성','폐기물'] if k in bid_nm), None)
+            if not kw: continue
+            bid_no = item.findtext('bidNtceNo') or ''
+            parts  = oci.split('^')
+            if len(parts) >= 5:
+                try:
+                    t = float(parts[4])
+                    if 50 < t < 100:
+                        kw_bids[kw].append((bid_no, t))
+                except Exception: pass
+
+        # Step 3: 낙찰하한율 일괄 조회
+        all_bids = [(b, t, kw) for kw, bids in kw_bids.items() for b, t in bids]
+        target_nos = {b for b, _, _ in all_bids}
+        lwlt_map = {}
+        for m in range(3):
+            e_dt = TODAY - timedelta(days=30 * m)
+            s_dt = TODAY - timedelta(days=30 * (m + 1))
+            try:
+                res = requests.get(BID_URL, params={
+                    'serviceKey': KEY, 'numOfRows': '500', 'pageNo': '1',
+                    'type': 'json', 'inqryDiv': '1',
+                    'inqryBgnDt': s_dt.strftime('%Y%m%d'),
+                    'inqryEndDt': e_dt.strftime('%Y%m%d'),
+                }, timeout=10)
+                if res.status_code != 200: continue
+                items = res.json().get('response',{}).get('body',{}).get('items',[])
+                if isinstance(items, dict): items = [items]
+                for it in items:
+                    bno  = str(it.get('bidNtceNo',''))
+                    if bno in target_nos:
+                        lwlt = it.get('sucsfbidLwltRate')
+                        if lwlt:
+                            try: lwlt_map[bno] = float(lwlt)
+                            except Exception: pass
+            except Exception: continue
+
+        # Step 4: 키워드별 ratio(%) 계산 + 구간 분석
+        def top2_ranges(pcts, bin_w=0.5):
+            """0.5% 구간에서 Top2, 실제 min~max 범위 반환"""
+            bins = Counter(round(p / bin_w) * bin_w for p in pcts)
+            total = len(pcts)
+            result = []
+            for center, cnt in bins.most_common(2):
+                in_bin = [p for p in pcts if abs(p - center) < bin_w]
+                if not in_bin: continue
+                result.append({
+                    'range': f"{min(in_bin):.2f}~{max(in_bin):.2f}%",
+                    'count': cnt,
+                    'pct':   round(cnt/total*100, 1),
+                })
+            return result
+
+        result = {}
+        for kw in ['폐목재','낙엽','식물성','폐기물']:
+            bids = kw_bids.get(kw, [])
+            pcts = []
+            for bid_no, t_rate in bids:
+                lwlt = lwlt_map.get(bid_no)
+                if lwlt and lwlt > 0:
+                    pct = (t_rate / lwlt) * 100   # 투찰율/낙찰하한율 × 100 (%)
+                    if 85 < pct < 115:
+                        pcts.append(round(pct, 2))
+            if pcts:
+                result[kw] = {
+                    'count': len(pcts),
+                    'top2':  top2_ranges(pcts),
+                }
+        return result
+    except Exception:
+        return {}
+
+
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
                     "식물성", "부유", "초본류", "초목류", "임목", "폐가구",
@@ -517,7 +629,43 @@ def make_dajang_excel(sel_df: "pd.DataFrame") -> bytes:
             ws_h['A1'] = f"오류: {e}"
         except Exception: pass
 
-        buf = io.BytesIO()
+        # ═══ 낙찰이력 참고 시트 ═══
+    try:
+        stats = fetch_scsbid_stats()
+        ws_h  = wb.create_sheet("낙찰이력참고")
+        for col, w in {'A':12,'B':8,'C':22,'D':8,'E':8}.items():
+            ws_h.column_dimensions[col].width = w
+
+        ws_h['A1'] = "낙찰이력 참고 (투찰율÷낙찰하한율×100, 최근 3개월)"
+        ws_h['A1'].font = Font(bold=True, size=12)
+        ws_h.append([])
+
+        hdr_fill = PatternFill("solid", fgColor="70AD47")
+        for kw in ['폐목재','낙엽','식물성','폐기물']:
+            info = stats.get(kw)
+            # 키워드 헤더
+            row_idx = ws_h.max_row + 1
+            ws_h.append([f"▶ {kw}", f"({info['count']}건)" if info else "(데이터 없음)"])
+            for c in ws_h[ws_h.max_row]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = hdr_fill
+
+            if info:
+                ws_h.append(["순위", "건수", "투찰비율 구간", "건수비율", ""])
+                for c in ws_h[ws_h.max_row]: c.font = Font(bold=True)
+                for i, pk in enumerate(info['top2'], 1):
+                    ws_h.append([
+                        f"{i}순위",
+                        pk['count'],
+                        pk['range'],
+                        f"{pk['pct']}%",
+                        ""
+                    ])
+            ws_h.append([])
+    except Exception:
+        pass
+
+    buf = io.BytesIO()
     wb.save(buf); buf.seek(0)
     return buf.read()
 
