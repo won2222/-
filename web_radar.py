@@ -47,11 +47,12 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.0"
+VERSION     = "v5.1"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_scsbid_stats() -> dict:
     """
     폐목재/낙엽/식물성/폐기물 키워드 3개월 개찰결과 분석
@@ -65,7 +66,7 @@ def fetch_scsbid_stats() -> dict:
 
         # Step 1: 3개월 개찰결과 수집
         all_items = []
-        for m in range(3):
+        for m in range(1):
             e_dt = TODAY - timedelta(days=30 * m)
             s_dt = TODAY - timedelta(days=30 * (m + 1))
             try:
@@ -73,7 +74,7 @@ def fetch_scsbid_stats() -> dict:
                     'ServiceKey': KEY, 'inqryDiv': '1',
                     'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
                     'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
-                    'numOfRows': '300', 'pageNo': '1',
+                    'numOfRows': '100', 'pageNo': '1',
                 }, timeout=10)
                 if res.status_code != 200: continue
                 root = ET.fromstring(res.text)
@@ -103,7 +104,7 @@ def fetch_scsbid_stats() -> dict:
         all_bids = [(b, t, kw) for kw, bids in kw_bids.items() for b, t in bids]
         target_nos = {b for b, _, _ in all_bids}
         lwlt_map = {}
-        for m in range(3):
+        for m in range(1):
             e_dt = TODAY - timedelta(days=30 * m)
             s_dt = TODAY - timedelta(days=30 * (m + 1))
             try:
