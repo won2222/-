@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.1"
+VERSION     = "v5.2"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
@@ -64,31 +64,39 @@ def fetch_scsbid_stats() -> dict:
         BID_URL = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch'
         KEY     = unquote(SERVICE_KEY)
 
-        # Step 1: 3개월 개찰결과 수집
-        all_items = []
-        for m in range(1):
-            e_dt = TODAY - timedelta(days=30 * m)
-            s_dt = TODAY - timedelta(days=30 * (m + 1))
-            try:
-                res = requests.get(SCSBID_URL, params={
-                    'ServiceKey': KEY, 'inqryDiv': '1',
-                    'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
-                    'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
-                    'numOfRows': '100', 'pageNo': '1',
-                }, timeout=10)
-                if res.status_code != 200: continue
-                root = ET.fromstring(res.text)
-                if root.findtext('.//resultCode') != '00': continue
-                all_items.extend(root.findall('.//item'))
-            except Exception: continue
+        e_dt = TODAY
+        s_dt = TODAY - timedelta(days=90)   # 최근 3개월
 
-        # Step 2: 키워드별 (bidNtceNo, 투찰율) 추출
+        # Step 1: 키워드별로 서버 필터링(bidNtceNm)해서 3개월 개찰결과 수집 (전국 무필터 샘플링 금지)
+        raw_by_no = {}   # bidNtceNo -> item  (중복 제거)
+        for kw in SCSBID_TARGET_KWS:
+            for page in range(1, 4):   # 키워드당 최대 300건
+                try:
+                    res = requests.get(SCSBID_URL, params={
+                        'ServiceKey': KEY, 'inqryDiv': '1',
+                        'inqryBgnDt': s_dt.strftime('%Y%m%d') + '0000',
+                        'inqryEndDt': e_dt.strftime('%Y%m%d') + '2359',
+                        'numOfRows': '100', 'pageNo': str(page),
+                        'bidNtceNm': kw,
+                    }, timeout=10)
+                    if res.status_code != 200: break
+                    root = ET.fromstring(res.text)
+                    if root.findtext('.//resultCode') != '00': break
+                    items = root.findall('.//item')
+                    if not items: break
+                    for it in items:
+                        bno = it.findtext('bidNtceNo') or ''
+                        if bno: raw_by_no[bno] = it
+                    total_count = int(root.findtext('.//totalCount') or 0)
+                    if page * 100 >= total_count: break
+                except Exception: break
+
+        # Step 2: 키워드별 (bidNtceNo, 투찰율) 추출 (우선순위: 폐목재>낙엽>식물성>폐기물)
         kw_bids = defaultdict(list)
-        for item in all_items:
+        for item in raw_by_no.values():
             bid_nm = item.findtext('bidNtceNm') or ''
             oci    = item.findtext('opengCorpInfo') or ''
             if '완료' not in (item.findtext('progrsDivCdNm') or ''): continue
-            # 우선순위: 폐목재>낙엽>식물성>폐기물 (구체적 키워드 우선)
             kw = next((k for k in ['폐목재','낙엽','식물성','폐기물'] if k in bid_nm), None)
             if not kw: continue
             bid_no = item.findtext('bidNtceNo') or ''
@@ -100,31 +108,35 @@ def fetch_scsbid_stats() -> dict:
                         kw_bids[kw].append((bid_no, t))
                 except Exception: pass
 
-        # Step 3: 낙찰하한율 일괄 조회
+        # Step 3: 낙찰하한율 조회 (동일하게 키워드별 서버 필터링으로 3개월치 조회)
         all_bids = [(b, t, kw) for kw, bids in kw_bids.items() for b, t in bids]
         target_nos = {b for b, _, _ in all_bids}
         lwlt_map = {}
-        for m in range(1):
-            e_dt = TODAY - timedelta(days=30 * m)
-            s_dt = TODAY - timedelta(days=30 * (m + 1))
-            try:
-                res = requests.get(BID_URL, params={
-                    'serviceKey': KEY, 'numOfRows': '500', 'pageNo': '1',
-                    'type': 'json', 'inqryDiv': '1',
-                    'inqryBgnDt': s_dt.strftime('%Y%m%d'),
-                    'inqryEndDt': e_dt.strftime('%Y%m%d'),
-                }, timeout=10)
-                if res.status_code != 200: continue
-                items = res.json().get('response',{}).get('body',{}).get('items',[])
-                if isinstance(items, dict): items = [items]
-                for it in items:
-                    bno  = str(it.get('bidNtceNo',''))
-                    if bno in target_nos:
-                        lwlt = it.get('sucsfbidLwltRate')
-                        if lwlt:
-                            try: lwlt_map[bno] = float(lwlt)
-                            except Exception: pass
-            except Exception: continue
+        for kw in SCSBID_TARGET_KWS:
+            for page in range(1, 4):
+                try:
+                    res = requests.get(BID_URL, params={
+                        'serviceKey': KEY, 'numOfRows': '500', 'pageNo': str(page),
+                        'type': 'json', 'inqryDiv': '1',
+                        'inqryBgnDt': s_dt.strftime('%Y%m%d'),
+                        'inqryEndDt': e_dt.strftime('%Y%m%d'),
+                        'bidNtceNm': kw,
+                    }, timeout=10)
+                    if res.status_code != 200: break
+                    body = res.json().get('response', {}).get('body', {})
+                    items = body.get('items', [])
+                    if isinstance(items, dict): items = [items]
+                    if not items: break
+                    for it in items:
+                        bno = str(it.get('bidNtceNo', ''))
+                        if bno in target_nos:
+                            lwlt = it.get('sucsfbidLwltRate')
+                            if lwlt:
+                                try: lwlt_map[bno] = float(lwlt)
+                                except Exception: pass
+                    total_count = int(body.get('totalCount', 0) or 0)
+                    if page * 500 >= total_count: break
+                except Exception: break
 
         # Step 4: 키워드별 ratio(%) 계산 + 구간 분석
         def top2_ranges(pcts, bin_w=0.5):
