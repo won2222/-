@@ -22,14 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── 최소 CSS (구글폰트 제거 → 흰화면 방지) ──
+# ── 최소 CSS (버튼 색상만, 위젯 내부는 건드리지 않음 → 렌더링 깨짐 방지) ──
 st.markdown("""
 <style>
-[data-testid="stSidebar"] { background-color: #1e2235; }
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] div { color: #dde3f0 !important; }
 .stButton > button {
     background: #2563eb !important; color: white !important;
     border: none !important; font-weight: 600 !important;
@@ -47,7 +42,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.4"
+VERSION     = "v5.5"
 TODAY       = datetime.now()
 
 DEFAULT_KEYWORDS = ["폐기물", "운반", "폐목재", "폐합성수지", "잔재", "가연성", "낙엽",
