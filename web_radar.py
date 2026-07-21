@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.1.1"
+VERSION     = "v5.1.2"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
@@ -747,6 +747,11 @@ def fetch_narajangter(keywords, start, end, test_mode):
         ALLOW_BID = ('소액수의견적', '적격심사제')
         sucsfbid_nm = str(row.get('sucsfbidMthdNm', '') or '')
         if not test_mode and sucsfbid_nm and not any(a in sucsfbid_nm for a in ALLOW_BID):
+            return None
+
+        # 취소공고 제외
+        ntce_kind = str(row.get('ntceKindNm', '') or '')
+        if '취소' in ntce_kind:
             return None
 
         return to_row(
