@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.2-perf"
+VERSION     = "v5.1"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
@@ -811,16 +811,10 @@ def fetch_d2b(keywords, start, end, test_mode):
             items = res.json().get('response', {}).get('body', {}).get('items', {}).get('item', [])
             items = [items] if isinstance(items, dict) else items
 
-            matched_items = []
             for it in items:
                 bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
                 matched_kw = [kw for kw in keywords if kw in bid_nm]
                 if not matched_kw: continue
-                matched_items.append((it, matched_kw))
-
-            def fetch_one(pair):
-                it, matched_kw = pair
-                bid_nm = it.get('bidNm') or it.get('othbcNtatNm', '')
 
                 p_no    = it.get('pblancNo') or ''
                 d_year  = str(it.get('demandYear', ''))
@@ -855,10 +849,14 @@ def fetch_d2b(keywords, start, end, test_mode):
                 except: pass
 
                 status = it.get('progrsSttus') or "진행중"
-                if not ("진행중" in status or status == ""): return None
-                if not test_mode and not any(t in area for t in target_areas): return None
+                if not ("진행중" in status or status == ""): continue
+                if not test_mode and not any(t in area for t in target_areas): continue
+                if test_mode or any(t in area for t in target_areas):
+                    pass
+                else:
+                    continue
 
-                return to_row(
+                results.append(to_row(
                     source=config['source'],
                     notice_no=combined_g2b or p_no or '-',
                     title=bid_nm, agency=it.get('ornt', '-'),
@@ -869,16 +867,7 @@ def fetch_d2b(keywords, start, end, test_mode):
                     amount=int(pd.to_numeric(budget, errors='coerce') or 0),
                     region=area, license_info='미조회',
                     keyword=','.join(matched_kw), url=D2B_HOME,
-                )
-
-            # ★ 상세조회 병렬화 (안전하게 워커 4개 - 나라장터와 동일 수준)
-            with ThreadPoolExecutor(max_workers=4) as ex:
-                futures = [ex.submit(fetch_one, pair) for pair in matched_items]
-                for fut in as_completed(futures):
-                    try:
-                        v = fut.result()
-                        if v: results.append(v)
-                    except: pass
+                ))
         except: pass
 
     seen, dedup = set(), []
@@ -1215,3 +1204,4 @@ else:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
+
