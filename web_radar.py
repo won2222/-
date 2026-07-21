@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.1"
+VERSION     = "v5.1.1"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
@@ -801,7 +801,7 @@ def fetch_d2b(keywords, start, end, test_mode):
     ]
 
     for config in api_configs:
-        params = {'serviceKey': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
+        params = {'service_key': SERVICE_KEY, 'numOfRows': '500', '_type': 'json'}
         if config['type'] == '공개수의':
             params.update({'prqudoPresentnClosDateBegin': d2b_start,
                            'prqudoPresentnClosDateEnd':   d2b_end})
