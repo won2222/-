@@ -47,7 +47,7 @@ st.markdown("""
 # =====================================================================
 SERVICE_KEY = '9ada16f8e5bc00e68aa27ceaa5a0c2ae3d4a5e0ceefd9fdca653b03da27eebf0'
 HEADERS     = {'User-Agent': 'Mozilla/5.0'}
-VERSION     = "v5.1.2"
+VERSION     = "v5.1.3"
 TODAY       = datetime.now()
 SCSBID_URL       = 'http://apis.data.go.kr/1230000/as/ScsbidInfoService/getOpengResultListInfoServcPPSSrch'
 SCSBID_TARGET_KWS = ['폐목재', '낙엽', '식물성', '폐기물']
@@ -965,6 +965,8 @@ def fetch_kogas(keywords, start, end):
 def fetch_kwater(keywords):
     results = []
     search_month = TODAY.strftime('%Y%m')
+    deadline_max = TODAY + timedelta(days=6)
+
     for kw in keywords:
         try:
             items = requests.get("http://apis.data.go.kr/B500001/ebid/tndr3/servcList",
@@ -976,10 +978,20 @@ def fetch_kwater(keywords):
             for it in items:
                 title = it.get('tndrPblancNm', '-')
                 if kw not in title: continue
+                # 마감일시 파싱 후 오늘~6일 이내만 통과
+                close_raw = str(it.get('tndrPblancEnddt', '') or '')
+                try:
+                    close_dt_obj = datetime.strptime(close_raw[:8], '%Y%m%d')
+                    if not (TODAY <= close_dt_obj <= deadline_max):
+                        continue
+                    close_dt_str = (close_dt_obj.strftime('%Y-%m-%d') +
+                                    (' ' + close_raw[8:] if len(close_raw) > 8 else ''))
+                except Exception:
+                    close_dt_str = close_raw
                 results.append(to_row(
                     source='수자원공사', notice_no=it.get('tndrPbanno', '-'),
                     title=title, agency=it.get('cntrctDeptNm', '-'),
-                    notice_dt='-', close_dt=it.get('tndrPblancEnddt', '-'),
+                    notice_dt='-', close_dt=close_dt_str,
                     open_dt='-', amount='-', region='확인불가', license_info='확인불가',
                     keyword=kw,
                     url=(KWATER_DETAIL_BASE + str(it.get('tndrPbanno', '')))
@@ -991,6 +1003,7 @@ def fetch_kwater(keywords):
         if r['공고번호'] not in seen:
             seen.add(r['공고번호']); dedup.append(r)
     return dedup
+
 
 # =====================================================================
 # 7. 사이드바
